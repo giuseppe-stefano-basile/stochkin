@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stochkin"
+version = "0.1.0"
+description = "Stochastic kinetics toolkit: Fokker-Planck/CTMC analysis on 1D and 2D free-energy surfaces"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+authors = [{ name = "Giuseppe Invernizzi" }]
+keywords = [
+    "fokker-planck",
+    "ctmc",
+    "langevin",
+    "mfpt",
+    "free-energy",
+    "plumed",
+    "molecular-dynamics",
+    "diffusion",
+    "stochastic",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Physics",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "numpy>=1.21",
+    "scipy>=1.7",
+    "matplotlib>=3.4",
+    "tqdm",
+    "pandas",
+]
+
+[project.optional-dependencies]
+fipy = ["fipy"]
+test = ["pytest", "pytest-cov"]
+dev  = ["pytest", "pytest-cov", "black", "ruff", "pre-commit"]
+
+[project.urls]
+Homepage   = "https://github.com/giuseppe-invernizzi/stochkin"
+Repository = "https://github.com/giuseppe-invernizzi/stochkin"
+Issues     = "https://github.com/giuseppe-invernizzi/stochkin/issues"
+
+[tool.setuptools.packages.find]
+where   = ["."]
+include = ["stochkin*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py39", "py310", "py311"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
