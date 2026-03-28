@@ -10,6 +10,16 @@ This script shows the simplest possible workflow:
 
 Usage
 -----
+    # Using the bundled synthetic data:
+    python 02_1d_plumed_fes_ctmc.py data/synthetic_1d_fes.dat \
+           --D 0.05 --crop 0.5 9.5 -T 300
+
+    # Or with your own PLUMED FES:
+    # Using the bundled synthetic data:
+    python 02_1d_plumed_fes_ctmc.py data/synthetic_1d_fes.dat \
+           --D 0.05 --crop 0.5 9.5 -T 300
+
+    # Or with your own PLUMED FES:
     python 02_1d_plumed_fes_ctmc.py fes.dat --D 0.04 --crop 4.5 6.5 -T 300
 
 Adapt the argument defaults below to your system.

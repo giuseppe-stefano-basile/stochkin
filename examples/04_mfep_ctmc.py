@@ -12,6 +12,11 @@ This script demonstrates the MFEP-based kinetics workflow:
 
 Usage
 -----
+    # Using the bundled synthetic data:
+    python 04_mfep_ctmc.py  data/synthetic_2d_fes.dat  \
+           --start 1.5 1.5  --end 6.0 1.5  --D-s 0.05  -T 300
+
+    # Or with your own 2D PLUMED FES:
     python 04_mfep_ctmc.py  fes_2d.dat  \\
            --start 1.0 0.5  --end 5.0 0.5  --D-s 0.04  -T 300
 

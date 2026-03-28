@@ -12,6 +12,11 @@ Expected CSV columns (default names):
 
 Usage
 -----
+    # Using the bundled synthetic data:
+    python 03_1d_hummer_D_ctmc.py  data/synthetic_1d_fes.dat  \
+           data/synthetic_diffusion_profile.csv  --crop 0.5 9.5  -T 300
+
+    # Or with your own FES + Hummer D profile:
     python 03_1d_hummer_D_ctmc.py  fes.dat  diffusion_profile.csv  \\
            --crop 4.5 6.5  -T 300
 
