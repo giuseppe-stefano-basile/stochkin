@@ -270,3 +270,33 @@ __all__ += [
     "interface_to_centers",
     "interpolate_D_to_grid",
 ]
+
+# --------------------------------------------------------------------
+# Publication style
+# --------------------------------------------------------------------
+from .style import (
+    set_publication_style,
+    publication_style,
+    LABEL_SIZE,
+    TICK_SIZE,
+    LEGEND_SIZE,
+    CBAR_LABEL_SIZE,
+    CBAR_TICK_SIZE,
+    TITLE_SIZE,
+)
+from .plotting import plot_2d_fes, draw_barrier_arrows
+
+__all__ += [
+    # Style
+    "set_publication_style",
+    "publication_style",
+    "LABEL_SIZE",
+    "TICK_SIZE",
+    "LEGEND_SIZE",
+    "CBAR_LABEL_SIZE",
+    "CBAR_TICK_SIZE",
+    "TITLE_SIZE",
+    # Extra plotting
+    "plot_2d_fes",
+    "draw_barrier_arrows",
+]
