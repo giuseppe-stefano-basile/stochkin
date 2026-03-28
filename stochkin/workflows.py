@@ -29,8 +29,10 @@ from typing import Optional, Sequence, Tuple, Union
 
 import numpy as np
 
-from .fes import load_plumed_fes_2d
-from .potentials import build_basin_network_from_fes_1d
+from itertools import combinations
+
+from .fes import load_plumed_fes_2d, make_fes_potential_from_grid
+from .potentials import build_basin_network_from_fes_1d, build_basin_network_from_potential
 from .fpe import compute_ctmc_generator_fpe_1d
 from .mfep import compute_mfep_profile_1d
 
@@ -635,6 +637,178 @@ def run_mfep_ctmc(
 
 
 # ---------------------------------------------------------------------------
+# Multi-MFEP workflow: all-basin pairwise rates from a 2D FES
+# ---------------------------------------------------------------------------
+def run_multi_mfep_ctmc(
+    fes2d_path: Union[str, Path],
+    D_s: float,
+    T: float = 300.0,
+    time_unit: str = "ps",
+    neb_images: int = 120,
+    neb_steps: int = 3000,
+    neb_spring: float = 1.0,
+    use_neb: bool = True,
+    max_basins: Optional[int] = None,
+    core_fraction: Optional[float] = 0.05,
+    init_weight: str = "boltzmann",
+    resample_n: int = 500,
+    verbose: bool = True,
+) -> dict:
+    """Detect all basins on a 2D FES and compute pairwise MFEP-based CTMC rates.
+
+    Workflow:
+    1. Load the 2D PLUMED FES and build an interpolated potential.
+    2. Detect all basins on the 2D surface.
+    3. For every pair of basins (i, j), compute the MFEP connecting their
+       minima and run the 1D CTMC pipeline on the resulting F(s) profile.
+    4. Assemble a full N×N rate matrix from the pairwise 2-basin results.
+
+    Parameters
+    ----------
+    fes2d_path : str or Path
+        Path to a 2D PLUMED FES file.
+    D_s : float
+        Constant diffusion coefficient along the arc-length
+        [arc-length² / time_unit].
+    T : float
+        Temperature in K.
+    time_unit : str
+        Time unit for rates (``'ps'``, ``'ns'``, …).
+    neb_images, neb_steps, neb_spring, use_neb :
+        NEB parameters forwarded to :func:`compute_mfep_profile_1d`.
+    max_basins : int or None
+        Keep only the *max_basins* deepest minima.
+    core_fraction, init_weight :
+        Forwarded to :func:`run_1d_ctmc`.
+    resample_n : int
+        Uniform resampling density for F(s) before the FPE solve.
+    verbose : bool
+        Print progress information.
+
+    Returns
+    -------
+    dict with keys:
+        basin_network : BasinNetwork
+            The detected 2D basins.
+        basin_ids : np.ndarray
+            Sorted array of basin indices.
+        K : np.ndarray, shape (N, N)
+            Full rate matrix [1/time_unit].
+        K_ps : np.ndarray
+            Rate matrix in ps⁻¹.
+        exit_times : np.ndarray
+            Mean exit time from each basin [time_unit].
+        exit_ps : np.ndarray
+            Mean exit time in ps.
+        kT : float
+            Thermal energy [kJ/mol].
+        legs : dict
+            ``legs[(i, j)]`` is the full result dict from ``run_mfep_ctmc``
+            for the directed MFEP leg from basin *i* to basin *j*.
+    """
+    # 1. Load the 2D FES
+    x_grid, y_grid, fes_grid = load_plumed_fes_2d(fes2d_path, verbose=verbose)
+    kT = _kT(T)
+    ps_per_unit = _time_unit_to_ps(time_unit)
+
+    # 2. Build an interpolated potential and detect 2D basins
+    fes_pot = make_fes_potential_from_grid(x_grid, y_grid, fes_grid)
+    basin_net = build_basin_network_from_potential(
+        fes_pot,
+        xlim=(float(x_grid[0]),  float(x_grid[-1])),
+        ylim=(float(y_grid[0]),  float(y_grid[-1])),
+        nx=len(x_grid),
+        ny=len(y_grid),
+        max_basins=max_basins,
+        verbose=verbose,
+    )
+
+    n = basin_net.n_basins
+    basin_ids = np.array([b.id for b in basin_net.basins])
+    if verbose:
+        for b in basin_net.basins:
+            print(f"  Basin {b.id}: minimum at ({b.minimum[0]:.2f}, "
+                  f"{b.minimum[1]:.2f}), F_min={b.f_min:.2f}")
+
+    # 3. Pairwise MFEPs
+    K = np.zeros((n, n), dtype=float)
+    legs: dict = {}
+
+    for i, j in combinations(range(n), 2):
+        bi, bj = basin_net.basins[i], basin_net.basins[j]
+        start = tuple(bi.minimum.tolist())
+        end = tuple(bj.minimum.tolist())
+
+        if verbose:
+            print(f"\n--- MFEP leg {bi.id} → {bj.id}  "
+                  f"({start} → {end}) ---")
+
+        try:
+            leg = run_mfep_ctmc(
+                fes2d_path=fes2d_path,
+                start=start,
+                end=end,
+                D_s=D_s,
+                T=T,
+                time_unit=time_unit,
+                neb_images=neb_images,
+                neb_steps=neb_steps,
+                neb_spring=neb_spring,
+                use_neb=use_neb,
+                core_fraction=core_fraction,
+                init_weight=init_weight,
+                resample_n=resample_n,
+                verbose=verbose,
+            )
+        except Exception as exc:
+            if verbose:
+                print(f"  ⚠  Leg {bi.id}→{bj.id} failed: {exc}")
+            continue
+
+        legs[(i, j)] = leg
+
+        # The leg result contains a 2-basin K matrix on the *arc-length*
+        # sub-problem. Basin 0 in the leg corresponds to the start (basin i)
+        # and basin 1 corresponds to the end (basin j).
+        K_leg = leg["K"]  # shape (n_leg, n_leg) in [1/time_unit]
+        n_leg = K_leg.shape[0]
+
+        if n_leg >= 2:
+            # Forward rate: K_leg[0, 1] is k(i→j), K_leg[1, 0] is k(j→i)
+            K[i, j] += K_leg[0, n_leg - 1]
+            K[j, i] += K_leg[n_leg - 1, 0]
+        elif verbose:
+            print(f"  ⚠  Leg {bi.id}→{bj.id}: only {n_leg} basin(s) "
+                  "detected along the MFEP — no rate extracted.")
+
+    # 4. Fix diagonal so each row sums to 0
+    for i in range(n):
+        K[i, i] = -np.sum(K[i, :])
+
+    K_ps = K * ps_per_unit
+    with np.errstate(divide="ignore"):
+        exit_times = np.where(K.diagonal() != 0, -1.0 / K.diagonal(), np.inf)
+    exit_ps = exit_times * ps_per_unit
+
+    if verbose:
+        print(f"\n{'='*60}")
+        print(f"Full {n}×{n} rate matrix K [{time_unit}⁻¹]:")
+        print(K)
+        print(f"\nExit times [{time_unit}]: {exit_times}")
+
+    return {
+        "basin_network": basin_net,
+        "basin_ids": basin_ids,
+        "K": K,
+        "K_ps": K_ps,
+        "exit_times": exit_times,
+        "exit_ps": exit_ps,
+        "kT": kT,
+        "legs": legs,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 __all__ = [
@@ -643,6 +817,7 @@ __all__ = [
     "run_1d_ctmc_from_plumed",
     "run_1d_ctmc_with_hummer_D",
     "run_mfep_ctmc",
+    "run_multi_mfep_ctmc",
     # D-profile helpers exposed for advanced users
     "interface_to_centers",
     "interpolate_D_to_grid",

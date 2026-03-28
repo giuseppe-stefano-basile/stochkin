@@ -8,7 +8,7 @@ Several workflows in this project (cropped FES domains, ROI sampling, MFPT
 estimation) need a *consistent* way to keep trajectories inside a rectangular
 box.
 
-The mirror-reflection rule is the same as in your pasted script:
+The mirror-reflection rule is:
 if a coordinate exits [lo, hi] it is reflected back in (possibly multiple times
 if the step overshoots by more than the box size).
 

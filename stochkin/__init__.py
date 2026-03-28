@@ -257,6 +257,7 @@ from .workflows import (
     run_1d_ctmc_from_plumed,
     run_1d_ctmc_with_hummer_D,
     run_mfep_ctmc,
+    run_multi_mfep_ctmc,
     interface_to_centers,
     interpolate_D_to_grid,
 )
@@ -267,6 +268,7 @@ __all__ += [
     "run_1d_ctmc_from_plumed",
     "run_1d_ctmc_with_hummer_D",
     "run_mfep_ctmc",
+    "run_multi_mfep_ctmc",
     "interface_to_centers",
     "interpolate_D_to_grid",
 ]
