@@ -47,9 +47,9 @@ test = ["pytest", "pytest-cov"]
 dev  = ["pytest", "pytest-cov", "black", "ruff", "pre-commit"]
 
 [project.urls]
-Homepage   = "https://github.com/giuseppe-invernizzi/stochkin"
-Repository = "https://github.com/giuseppe-invernizzi/stochkin"
-Issues     = "https://github.com/giuseppe-invernizzi/stochkin/issues"
+Homepage   = "https://github.com/giuseppe-stefano-basile/stochkin"
+Repository = "https://github.com/giuseppe-stefano-basile/stochkin"
+Issues     = "https://github.com/giuseppe-stefano-basile/stochkin/issues"
 
 [tool.setuptools.packages.find]
 where   = ["."]
