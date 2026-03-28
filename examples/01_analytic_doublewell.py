@@ -33,9 +33,7 @@ KT       = 0.5       # thermal energy (= 1/beta); barrier height / kT ≈ 5
 GAMMA    = 1.0       # friction coefficient
 DT       = 1e-3      # Langevin time step
 MAX_TIME = 5e4       # max trajectory length per replica
-N_REP    = 200       # number of parallel replicas
-
-RNG = np.random.default_rng(42)
+N_TRIALS = 200       # number of parallel replicas
 
 # ---------------------------------------------------------------------------
 # Potential
@@ -59,29 +57,35 @@ basin_net = sk.build_basin_network_from_potential(
     double_well,
     xlim=(-2.0, 2.0),
     ylim=(-1.5, 1.5),
-    ns=100,
+    nx=101,   # odd → x=±1.0 land exactly on grid nodes
+    ny=101,   # odd → y=0.0 lands exactly on a grid node
 )
 print(f"  Found {basin_net.n_basins} basins")
 for b in basin_net.basins:
-    print(f"  Basin {b.id}: center ≈ {b.center}")
+    print(f"  Basin {b.id}: minimum ≈ {b.minimum}")
 
 # ---------------------------------------------------------------------------
 # Bidirectional MFPT (trajectory-based)
 # ---------------------------------------------------------------------------
-print("\nComputing MFPT via Langevin replicas …")
+print("\nComputing MFPT via overdamped Langevin replicas …")
+b0, b1 = basin_net.basins[0], basin_net.basins[1]
+
 result = sk.compute_bidirectional_mfpt(
     double_well,
-    basin_net.basins[0],
-    basin_net.basins[1],
+    lambda x: basin_net.which_basin(x) == b0.id,   # callable basin predicate
+    lambda x: basin_net.which_basin(x) == b1.id,   # callable basin predicate
     kT=KT,
     gamma=GAMMA,
-    n_replicas=N_REP,
+    n_trials=N_TRIALS,
     max_time=MAX_TIME,
     dt=DT,
     regime="overdamped",
+    boundsA=b0.bounds,
+    boundsB=b1.bounds,
+    processes=1,          # lambdas aren't picklable → single-process
 )
-mfpt_01 = result.get("mfpt_AB", float("nan"))
-mfpt_10 = result.get("mfpt_BA", float("nan"))
+mfpt_01 = result["A_to_B"]["mean"]
+mfpt_10 = result["B_to_A"]["mean"]
 print(f"  MFPT  0→1 = {mfpt_01:.2e}  τ")
 print(f"  MFPT  1→0 = {mfpt_10:.2e}  τ")
 
@@ -97,8 +101,9 @@ fig, ax = plt.subplots(figsize=(5, 3.5))
 cs = ax.contourf(X, Y, U_grid.T / KT, levels=np.linspace(0, 10, 20), cmap="viridis_r")
 plt.colorbar(cs, ax=ax, label=r"$U / k_\mathrm{B}T$")
 for b in basin_net.basins:
-    ax.plot(*b.center, "o", color="white", ms=8)
-    ax.text(*b.center, f" B{b.id}", color="white", va="center", fontsize=9)
+    mx, my = float(b.minimum[0]), float(b.minimum[1])
+    ax.plot(mx, my, "o", color="white", ms=8)
+    ax.text(mx, my, f" B{b.id}", color="white", va="center", fontsize=9)
 ax.set_xlabel(r"$x_1$")
 ax.set_ylabel(r"$x_2$")
 ax.set_title("Double-well potential")

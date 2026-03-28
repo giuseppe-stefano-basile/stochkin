@@ -306,6 +306,7 @@ def run_1d_ctmc(
     max_basins: Optional[int] = None,
     core_fraction: Optional[float] = 0.05,
     init_weight: str = "boltzmann",
+    resample_n: int = 500,
     verbose: bool = True,
 ) -> dict:
     """Compute 1D CTMC kinetics from arrays *s*, *F*, *D*.
@@ -394,6 +395,10 @@ def run_1d_ctmc_from_plumed(
         Resample to this many uniform points (useful after cropping).
     s_col, F_col : int
         Column indices for CV and free energy in the FES file.
+    resample_n : int
+        Resample the MFEP arc-length profile to this many uniform points
+        before running the FPE solver (which requires a uniform grid).
+        Default 500.
     max_basins, core_fraction, init_weight, verbose :
         Forwarded to :func:`run_1d_ctmc`.
 
@@ -482,6 +487,10 @@ def run_1d_ctmc_with_hummer_D(
         Required because the FPE solver needs a uniform grid.  Default 500.
     s_col, F_col : int
         Column indices in the FES file.
+    resample_n : int
+        Resample the MFEP arc-length profile to this many uniform points
+        before running the FPE solver (which requires a uniform grid).
+        Default 500.
     max_basins, core_fraction, init_weight, verbose :
         Forwarded to :func:`run_1d_ctmc`.
 
@@ -549,6 +558,7 @@ def run_mfep_ctmc(
     max_basins: Optional[int] = None,
     core_fraction: Optional[float] = 0.05,
     init_weight: str = "boltzmann",
+    resample_n: int = 500,
     verbose: bool = True,
 ) -> dict:
     """Find the MFEP on a 2D FES and compute 1D CTMC kinetics along it.
@@ -580,6 +590,10 @@ def run_mfep_ctmc(
         NEB spring constant (kJ/mol per CV² or compatible units).
     use_neb : bool
         If False, skip NEB refinement and use the raw grid path.
+    resample_n : int
+        Resample the MFEP arc-length profile to this many uniform points
+        before running the FPE solver (which requires a uniform grid).
+        Default 500.
     max_basins, core_fraction, init_weight, verbose :
         Forwarded to :func:`run_1d_ctmc`.
 
@@ -605,10 +619,11 @@ def run_mfep_ctmc(
         neb_max_iter=neb_steps,
     )
 
-    # 1D profile along arc-length
-    s = path.s
-    F_1d = path.F
-    F_1d = F_1d - np.nanmin(F_1d)
+    # 1D profile along arc-length – resample to uniform grid
+    s_raw = path.s
+    F_raw = path.F - np.nanmin(path.F)
+    s = np.linspace(s_raw[0], s_raw[-1], int(resample_n))
+    F_1d = np.interp(s, s_raw, F_raw)
 
     result = run_1d_ctmc(
         s=s, F=F_1d, D=D_s, T=T, time_unit=time_unit,
