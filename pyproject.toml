@@ -9,7 +9,7 @@ description = "Stochastic kinetics toolkit: Fokker-Planck/CTMC analysis on 1D an
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.9"
-authors = [{ name = "Giuseppe Invernizzi" }]
+authors = [{ name = "Giuseppe Stefano Basile" }]
 keywords = [
     "fokker-planck",
     "ctmc",
