@@ -48,6 +48,8 @@ def _parse():
     p.add_argument("--crop",   nargs=2, type=float, metavar=("LO", "HI"))
     p.add_argument("-T",       type=float, default=300.0)
     p.add_argument("--resample-n", type=int, default=500)
+    p.add_argument("--core-fraction", type=float, default=0.05,
+                   help="Core fraction for CTMC entry/exit  (default 0.05)")
     p.add_argument("--out-prefix", default="03")
     return p.parse_args()
 
@@ -68,6 +70,7 @@ def main():
         d_grid=args.D_grid,
         crop=crop,
         resample_n=args.resample_n,
+        core_fraction=args.core_fraction,
     )
 
     # ------------------------------------------------------------------

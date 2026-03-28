@@ -49,6 +49,8 @@ def _parse():
                    help="Temperature in K")
     p.add_argument("--neb-images", type=int, default=120)
     p.add_argument("--neb-steps",  type=int, default=3000)
+    p.add_argument("--core-fraction", type=float, default=0.05,
+                   help="Core fraction for CTMC entry/exit  (default 0.05)")
     p.add_argument("--out-prefix", default="04")
     return p.parse_args()
 
@@ -68,6 +70,7 @@ def main():
         T=args.T,
         neb_images=args.neb_images,
         neb_steps=args.neb_steps,
+        core_fraction=args.core_fraction,
     )
 
     path   = result["mfep_path"]   # MFEPPath with .x, .y, .s, .F
