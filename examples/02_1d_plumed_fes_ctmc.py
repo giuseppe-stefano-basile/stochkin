@@ -15,11 +15,6 @@ Usage
            --D 0.05 --crop 0.5 9.5 -T 300
 
     # Or with your own PLUMED FES:
-    # Using the bundled synthetic data:
-    python 02_1d_plumed_fes_ctmc.py data/synthetic_1d_fes.dat \
-           --D 0.05 --crop 0.5 9.5 -T 300
-
-    # Or with your own PLUMED FES:
     python 02_1d_plumed_fes_ctmc.py fes.dat --D 0.04 --crop 4.5 6.5 -T 300
 
 Adapt the argument defaults below to your system.
@@ -28,10 +23,12 @@ import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 import stochkin as sk
+from stochkin.style import publication_style, LABEL_SIZE, TICK_SIZE, LEGEND_SIZE
+from stochkin.plotting import _apply_pub_axes, _apply_pub_cbar
 
-# ---------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 # CLI
-# ---------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 def _parse():
     p = argparse.ArgumentParser(description="1D PLUMED FES → CTMC kinetics")
     p.add_argument("fes",        help="Path to 1D PLUMED FES file")
@@ -54,9 +51,9 @@ def main():
     args = _parse()
     crop = tuple(args.crop) if args.crop else None
 
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # Run the CTMC pipeline
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
     print(f"Loading FES: {args.fes}")
     result = sk.run_1d_ctmc_from_plumed(
         fes_path=args.fes,
@@ -67,9 +64,9 @@ def main():
         core_fraction=args.core_fraction,
     )
 
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # Print results
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
     K_ns = result["K_ps"] * 1000  # convert ps⁻¹ → ns⁻¹
     tau_ns = result["exit_ps"] / 1000
 
@@ -77,42 +74,44 @@ def main():
     print(f"Rate matrix  K  [ns⁻¹]:\n{K_ns}")
     print(f"\nExit times τ  [ns]:  {tau_ns}")
 
-    # -----------------------------------------------------------------------
-    # Plot
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Plot (publication style)
+    # ------------------------------------------------------------------
     s      = result["s"]
     F      = result["F"]
     labels = result["labels_full"]
 
-    cmap = plt.get_cmap("tab10")
-    fig, axes = plt.subplots(1, 2, figsize=(9, 3.2))
+    with publication_style():
+        cmap = plt.get_cmap("tab10")
+        fig, axes = plt.subplots(1, 2, figsize=(6.6, 2.8))
 
-    # Panel (a): FES + basins
-    ax = axes[0]
-    ax.plot(s, F, "k-", lw=1.5)
-    for bid in result["basin_ids"]:
-        mask = labels == bid
-        ax.fill_between(s, F, where=mask, alpha=0.25,
-                        color=cmap(bid), label=f"B{bid}")
-    ax.set_xlabel("CV")
-    ax.set_ylabel("F  [kJ mol⁻¹]")
-    ax.set_title("FES + basins")
-    ax.legend(fontsize=8)
+        # Panel (a): FES + basins
+        ax = axes[0]
+        ax.plot(s, F, "k-", lw=1.5)
+        for bid in result["basin_ids"]:
+            mask = labels == bid
+            ax.fill_between(s, F, where=mask, alpha=0.25,
+                            color=cmap(bid), label=f"B{bid}")
+        _apply_pub_axes(ax, "CV", r"F  [kJ mol$^{-1}$]", "FES + basins")
+        ax.legend(fontsize=LEGEND_SIZE, frameon=False)
 
-    # Panel (b): Rate matrix heatmap
-    ax = axes[1]
-    K_abs = np.abs(K_ns)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        Klog = np.where(K_abs > 0, np.log10(K_abs), np.nan)
-    im = ax.imshow(Klog, cmap="magma_r", aspect="auto")
-    n = K_ns.shape[0]
-    ax.set_xticks(range(n)); ax.set_xticklabels([f"B{i}" for i in result["basin_ids"]])
-    ax.set_yticks(range(n)); ax.set_yticklabels([f"B{i}" for i in result["basin_ids"]])
-    ax.set_title(r"$\log_{10}|K_{ij}|$  [ns⁻¹]")
-    plt.colorbar(im, ax=ax)
+        # Panel (b): Rate matrix heatmap
+        ax = axes[1]
+        K_abs = np.abs(K_ns)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            Klog = np.where(K_abs > 0, np.log10(K_abs), np.nan)
+        im = ax.imshow(Klog, cmap="magma_r", aspect="auto")
+        n = K_ns.shape[0]
+        ax.set_xticks(range(n))
+        ax.set_xticklabels([f"B{i}" for i in result["basin_ids"]])
+        ax.set_yticks(range(n))
+        ax.set_yticklabels([f"B{i}" for i in result["basin_ids"]])
+        cbar = fig.colorbar(im, ax=ax)
+        _apply_pub_cbar(cbar, label=r"$\log_{10}|K_{ij}|$  [ns$^{-1}$]")
+        _apply_pub_axes(ax, title=r"Rate matrix")
 
-    plt.tight_layout()
-    plt.savefig(args.out, dpi=150)
+        fig.tight_layout()
+        fig.savefig(args.out, dpi=300)
     print(f"\nSaved {args.out}")
 
 

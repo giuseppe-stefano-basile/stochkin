@@ -30,10 +30,12 @@ import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 import stochkin as sk
+from stochkin.style import publication_style, LABEL_SIZE, TICK_SIZE, LEGEND_SIZE
+from stochkin.plotting import _apply_pub_axes, _apply_pub_cbar
 
-# ---------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 # CLI
-# ---------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 def _parse():
     p = argparse.ArgumentParser(description="2D FES → MFEP → 1D CTMC")
     p.add_argument("fes2d",  help="Path to 2D PLUMED FES file")
@@ -54,9 +56,9 @@ def _parse():
 def main():
     args = _parse()
 
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # MFEP + CTMC
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
     print(f"Loading 2D FES: {args.fes2d}")
     result = sk.run_mfep_ctmc(
         fes2d_path=args.fes2d,
@@ -77,65 +79,71 @@ def main():
     print(f"Rate matrix  K  [ns⁻¹]:\n{K_ns}")
     print(f"Exit times  [ns]: {tau_ns}")
 
-    # -----------------------------------------------------------------------
-    # Plot 1: 2D FES + MFEP
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Plot 1: 2D FES + MFEP (publication style)
+    # ------------------------------------------------------------------
     x_grid, y_grid, fes_grid = sk.load_plumed_fes_2d(args.fes2d, verbose=False)
     kT = result["kT"]
 
-    fig, ax = plt.subplots(figsize=(5.5, 4.5))
-    cs = ax.contourf(
-        x_grid, y_grid, (fes_grid / kT).T,
-        levels=np.linspace(0, 15, 30), cmap="viridis_r",
-    )
-    plt.colorbar(cs, ax=ax, label=r"$F / k_\mathrm{B}T$")
-    ax.plot(path.x, path.y, "w-", lw=2, label="MFEP")
-    ax.plot(*args.start, "ws", ms=10)
-    ax.plot(*args.end,   "w^", ms=10)
-    ax.set_xlabel(r"CV$_1$");  ax.set_ylabel(r"CV$_2$")
-    ax.set_title("2D FES + MFEP")
-    ax.legend(fontsize=8)
-    plt.tight_layout()
-    plt.savefig(f"{args.out_prefix}_mfep_on_fes.png", dpi=150)
+    with publication_style():
+        fig, ax = plt.subplots(figsize=(3.3, 2.8))
+        cs = ax.contourf(
+            x_grid, y_grid, (fes_grid / kT).T,
+            levels=np.linspace(0, 15, 30), cmap="viridis_r",
+        )
+        cbar = fig.colorbar(cs, ax=ax)
+        _apply_pub_cbar(cbar, label=r"$F / k_\mathrm{B}T$")
+        ax.plot(path.x, path.y, "w-", lw=2, label="MFEP")
+        ax.plot(*args.start, "ws", ms=10)
+        ax.plot(*args.end,   "w^", ms=10)
+        _apply_pub_axes(ax, r"CV$_1$", r"CV$_2$", "2D FES + MFEP")
+        ax.legend(fontsize=LEGEND_SIZE, frameon=False)
+        fig.tight_layout()
+        fig.savefig(f"{args.out_prefix}_mfep_on_fes.png", dpi=300)
     print(f"Saved {args.out_prefix}_mfep_on_fes.png")
 
-    # -----------------------------------------------------------------------
-    # Plot 2: 1D arc-length profile
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Plot 2: 1D arc-length profile (publication style)
+    # ------------------------------------------------------------------
     s      = result["s"]
     F      = result["F"]
     labels = result["labels_full"]
-    cmap   = plt.get_cmap("tab10")
 
-    fig, ax = plt.subplots(figsize=(6, 3))
-    ax.plot(s, F, "k-", lw=1.5)
-    for bid in result["basin_ids"]:
-        mask = labels == bid
-        ax.fill_between(s, F, where=mask, alpha=0.25, color=cmap(bid), label=f"B{bid}")
-    ax.set_xlabel("Arc-length  s")
-    ax.set_ylabel("F  [kJ mol⁻¹]")
-    ax.set_title("1D profile along MFEP")
-    ax.legend(fontsize=8)
-    plt.tight_layout()
-    plt.savefig(f"{args.out_prefix}_mfep_1d_profile.png", dpi=150)
+    with publication_style():
+        cmap = plt.get_cmap("tab10")
+        fig, ax = plt.subplots(figsize=(3.3, 2.8))
+        ax.plot(s, F, "k-", lw=1.5)
+        for bid in result["basin_ids"]:
+            mask = labels == bid
+            ax.fill_between(s, F, where=mask, alpha=0.25,
+                            color=cmap(bid), label=f"B{bid}")
+        _apply_pub_axes(ax, "Arc-length  s", r"F  [kJ mol$^{-1}$]",
+                        "1D profile along MFEP")
+        ax.legend(fontsize=LEGEND_SIZE, frameon=False)
+        fig.tight_layout()
+        fig.savefig(f"{args.out_prefix}_mfep_1d_profile.png", dpi=300)
     print(f"Saved {args.out_prefix}_mfep_1d_profile.png")
 
-    # -----------------------------------------------------------------------
-    # Plot 3: Rate matrix
-    # -----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Plot 3: Rate matrix (publication style)
+    # ------------------------------------------------------------------
     K_abs = np.abs(K_ns)
     with np.errstate(divide="ignore", invalid="ignore"):
         Klog = np.where(K_abs > 0, np.log10(K_abs), np.nan)
 
-    fig, ax = plt.subplots(figsize=(4, 3.5))
-    im = ax.imshow(Klog, cmap="magma_r", aspect="auto")
-    bids = result["basin_ids"]
-    ax.set_xticks(range(n)); ax.set_xticklabels([f"B{i}" for i in bids])
-    ax.set_yticks(range(n)); ax.set_yticklabels([f"B{i}" for i in bids])
-    ax.set_title(r"$\log_{10}|K_{ij}|$  [ns⁻¹]")
-    plt.colorbar(im, ax=ax)
-    plt.tight_layout()
-    plt.savefig(f"{args.out_prefix}_ctmc_rates.png", dpi=150)
+    with publication_style():
+        fig, ax = plt.subplots(figsize=(3.3, 2.8))
+        im = ax.imshow(Klog, cmap="magma_r", aspect="auto")
+        bids = result["basin_ids"]
+        ax.set_xticks(range(n))
+        ax.set_xticklabels([f"B{i}" for i in bids])
+        ax.set_yticks(range(n))
+        ax.set_yticklabels([f"B{i}" for i in bids])
+        cbar = fig.colorbar(im, ax=ax)
+        _apply_pub_cbar(cbar, label=r"$\log_{10}|K_{ij}|$  [ns$^{-1}$]")
+        _apply_pub_axes(ax, title="Rate matrix")
+        fig.tight_layout()
+        fig.savefig(f"{args.out_prefix}_ctmc_rates.png", dpi=300)
     print(f"Saved {args.out_prefix}_ctmc_rates.png")
 
 
