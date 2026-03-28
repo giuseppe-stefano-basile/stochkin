@@ -92,7 +92,7 @@ def main():
         fig, ax = plt.subplots(figsize=(3.3, 2.8))
         cs = ax.contourf(
             x_grid, y_grid, (fes_grid / kT).T,
-            levels=np.linspace(0, 15, 30), cmap="viridis_r",
+            levels=np.linspace(0, 15, 30), cmap="rainbow_r",
         )
         cbar = fig.colorbar(cs, ax=ax)
         _apply_pub_cbar(cbar, label=r"$F / k_\mathrm{B}T$")
