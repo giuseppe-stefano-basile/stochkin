@@ -43,7 +43,7 @@ def _parse():
     p.add_argument("-T",      type=float, default=300.0,
                    help="Temperature in K")
     p.add_argument("--neb-images", type=int, default=120)
-    p.add_argument("--neb-steps",  type=int, default=3000)
+    p.add_argument("--neb-steps",  type=int, default=8000)
     p.add_argument("--max-basins", type=int, default=None,
                    help="Keep only the N deepest basins (default: all)")
     p.add_argument("--core-fraction", type=float, default=0.05,

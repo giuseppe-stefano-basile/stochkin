@@ -652,7 +652,7 @@ def run_multi_mfep_ctmc(
     D_s: float,
     T: float = 300.0,
     time_unit: str = "ps",
-    neb_images: int = 120,
+    neb_images: int =8120,
     neb_steps: int = 3000,
     neb_spring: float = 1.0,
     use_neb: bool = True,
