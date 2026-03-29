@@ -170,3 +170,92 @@ def test_interpolate_D_to_grid_positive():
     D  = np.abs(np.random.default_rng(7).standard_normal(20)) * 0.02 + 0.01
     Dg = sk.interpolate_D_to_grid(s, xD, D)
     assert np.all(Dg > 0), "Interpolated D contains non-positive values"
+
+
+# ---------------------------------------------------------------------------
+# Uncertainty propagation
+# ---------------------------------------------------------------------------
+def test_bootstrap_ctmc_1d_returns_result():
+    """bootstrap_ctmc_1d should return an UncertaintyResult."""
+    s, F = _simple_1d_fes()
+    res = sk.bootstrap_ctmc_1d(
+        s, F, D=0.01, F_err=0.3, n_bootstrap=10, seed=0, verbose=False,
+    )
+    assert isinstance(res, sk.UncertaintyResult)
+    assert res.n_bootstrap + res.n_failed == 10
+
+
+def test_bootstrap_ctmc_1d_shapes():
+    s, F = _simple_1d_fes()
+    res = sk.bootstrap_ctmc_1d(
+        s, F, D=0.01, F_err=0.3, D_rel_err=0.2,
+        n_bootstrap=15, seed=1, verbose=False,
+    )
+    nb = res.reference["K"].shape[0]
+    assert res.K_mean.shape == (nb, nb)
+    assert res.K_std.shape == (nb, nb)
+    assert res.K_ci_lo.shape == (nb, nb)
+    assert res.K_ci_hi.shape == (nb, nb)
+    assert res.K_samples.shape[1:] == (nb, nb)
+    assert res.exit_mean_mean.shape == (nb,)
+    assert res.k_out_samples.shape[1] == nb
+
+
+def test_bootstrap_ctmc_1d_ci_contains_reference():
+    """The reference (unperturbed) rate should lie within the wide CI."""
+    s, F = _simple_1d_fes()
+    res = sk.bootstrap_ctmc_1d(
+        s, F, D=0.01, F_err=0.3, n_bootstrap=30, seed=2, verbose=False,
+    )
+    K_ref = res.reference["K"]
+    # At least one off-diagonal element should be within CI
+    nb = K_ref.shape[0]
+    inside = 0
+    for i in range(nb):
+        for j in range(nb):
+            if i == j:
+                continue
+            if res.K_ci_lo[i, j] <= K_ref[i, j] <= res.K_ci_hi[i, j]:
+                inside += 1
+    assert inside > 0, "Reference rate not inside any CI"
+
+
+def test_bootstrap_ctmc_1d_zero_error():
+    """Zero error bars should produce zero spread."""
+    s, F = _simple_1d_fes()
+    res = sk.bootstrap_ctmc_1d(
+        s, F, D=0.01, F_err=0.0, D_err=0.0,
+        n_bootstrap=10, seed=3, verbose=False,
+    )
+    # All samples should be identical to the reference
+    np.testing.assert_allclose(res.K_std, 0.0, atol=1e-10)
+
+
+def test_bootstrap_ctmc_1d_D_lo_hi():
+    """Passing D_lo/D_hi (log-normal perturbation) should work."""
+    s, F = _simple_1d_fes()
+    D = np.full_like(s, 0.01)
+    D_lo = D * 0.5
+    D_hi = D * 2.0
+    res = sk.bootstrap_ctmc_1d(
+        s, F, D=D, D_lo=D_lo, D_hi=D_hi,
+        n_bootstrap=10, seed=4, verbose=False,
+    )
+    assert res.n_bootstrap > 0
+    assert res.K_std.max() > 0  # non-trivial spread
+
+
+def test_bootstrap_ctmc_1d_summary_string():
+    s, F = _simple_1d_fes()
+    res = sk.bootstrap_ctmc_1d(
+        s, F, D=0.01, F_err=0.3, n_bootstrap=10, seed=5, verbose=False,
+    )
+    txt = res.summary("ps")
+    assert "Bootstrap" in txt
+    assert "ps" in txt
+
+
+def test_uncertainty_in_public_api():
+    for name in ["bootstrap_ctmc_1d", "bootstrap_ctmc_with_hummer_D",
+                 "UncertaintyResult"]:
+        assert hasattr(sk, name), f"Missing public symbol: {name}"

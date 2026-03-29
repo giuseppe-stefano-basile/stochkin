@@ -302,3 +302,18 @@ __all__ += [
     "plot_2d_fes",
     "draw_barrier_arrows",
 ]
+
+# --------------------------------------------------------------------
+# Uncertainty propagation
+# --------------------------------------------------------------------
+from .uncertainty import (
+    UncertaintyResult,
+    bootstrap_ctmc_1d,
+    bootstrap_ctmc_with_hummer_D,
+)
+
+__all__ += [
+    "UncertaintyResult",
+    "bootstrap_ctmc_1d",
+    "bootstrap_ctmc_with_hummer_D",
+]
