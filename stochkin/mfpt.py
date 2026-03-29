@@ -1,4 +1,38 @@
-# mfpt.py
+"""stochkin.mfpt
+==============
+
+Mean first-passage time (MFPT) and transition-rate estimation.
+
+This module provides tools for computing MFPTs between metastable
+basins on a free-energy landscape:
+
+**Two-basin (pairwise) MFPT**
+
+- :func:`compute_mfpt` / :func:`compute_mfpt_1d` – trajectory-shooting
+  MFPT between two basins (Langevin or overdamped BD).
+- :func:`compute_bidirectional_mfpt` / :func:`compute_bidirectional_mfpt_1d`
+  – convenience wrappers that compute A→B and B→A in one call.
+
+**Multi-basin MFPT network**
+
+- :func:`compute_mfpt_network` – first-exit overdamped BD simulations
+  across all basins of a :class:`~stochkin.potentials.BasinNetwork`.
+- :func:`compute_mfpt_network_fpe` – grid-based backward Kolmogorov
+  solve for all-pairs MFPTs (no trajectories needed).
+
+**CTMC rate matrix estimation**
+
+- :func:`estimate_rate_matrix` – build a continuous-time Markov chain
+  generator :math:`K` from first-exit statistics or inverse-MFPT
+  fallback.
+
+**Diagnostics**
+
+- :func:`estimate_transition_rates` – simple two-state rate and
+  equilibrium-population summary.
+- :func:`plot_mfpt_statistics` – histogram of passage-time
+  distributions.
+"""
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -93,18 +127,43 @@ def _km_restricted_mean(event_times, n_total, t_max):
     return float(area), float(S)
 
 def single_passage_time(args):
-    """Worker: single first-passage time for two-basin MFPT.
+    """Run a single trajectory and return the first-passage time.
 
-    This function is intentionally top-level (picklable) and accepts a single
-    `args` tuple so it can be used with multiprocessing.Pool.
+    This is a top-level, picklable worker designed for use with
+    ``multiprocessing.Pool.map``.  It integrates the dynamics from a
+    starting position inside *start_basin* until *target_basin* is
+    reached (returns the elapsed time) or *max_time* is exceeded
+    (returns ``None``).
 
-    Backwards compatibility
-    -----------------------
-    Older code passed only the first 12 fields. Newer code may append:
-      - bounds: sequence of (lo,hi) pairs
-      - boundary: 'reflect' or 'clip'
-      - seed: int (for per-trajectory RNG)
-      - overdamped_eps: float (FD step for ∇D if diffusion has no .grad)
+    Parameters
+    ----------
+    args : tuple
+        Packed positional arguments (for multiprocessing compatibility):
+
+        0. potential : callable – ``(U, F) = potential(x)``
+        1. start_basin : callable – ``bool = start_basin(x)``
+        2. target_basin : callable – ``bool = target_basin(x)``
+        3. x0 : array_like – initial position
+        4. v0 : array_like – initial velocity
+        5. max_time : float – maximum simulation time
+        6. dt : float – integration time-step
+        7. gamma : float – friction
+        8. kT : float – thermal energy
+        9. m : float – mass
+        10. regime : {'underdamped', 'overdamped'}
+        11. diffusion : scalar, callable, or None
+
+        Optional (appended for newer code):
+
+        12. bounds : sequence of (lo, hi) or None
+        13. boundary : {'reflect', 'clip'} or None
+        14. seed : int or None – per-trajectory RNG seed
+        15. overdamped_eps : float – FD step for ∇D
+
+    Returns
+    -------
+    float or None
+        First-passage time, or ``None`` if *max_time* was exceeded.
     """
     # Required (historical) fields
     (
@@ -184,16 +243,21 @@ def generate_basin_position(
     bounds,
     max_attempts=1000,
 ):
-    """
-    Generate a random position within a basin.
+    """Sample a random 2D position inside a basin (rejection sampling).
 
-    Parameters:
-        basin_func: function that returns True if position is in basin
-        bounds: [[xmin, xmax], [ymin, ymax]] for sampling region
-        max_attempts: maximum attempts to find valid position
+    Parameters
+    ----------
+    basin_func : callable
+        ``basin_func(pos) -> bool`` indicating membership.
+    bounds : array_like, shape (2, 2)
+        ``[[xmin, xmax], [ymin, ymax]]`` bounding box.
+    max_attempts : int
+        Maximum rejection-sampling iterations.
 
-    Returns:
-        np.array([x, y]) or None if no valid position found
+    Returns
+    -------
+    ndarray of shape (2,) or None
+        A point inside the basin, or ``None`` if sampling failed.
     """
     for _ in range(max_attempts):
         x = np.random.uniform(bounds[0][0], bounds[0][1])
@@ -256,14 +320,58 @@ def compute_mfpt(
     boundary=None,
     base_seed=None,
 ):
-    """Compute mean first passage time from start_basin to target_basin.
+    """Compute the mean first-passage time from *start_basin* to *target_basin*.
 
-    Notes
-    -----
-    - If `bounds` is provided, each step is projected back into the domain using
-      `boundary` ('reflect' or 'clip'). This is essential for cropped-FES workflows.
-    - If `base_seed` is provided, each trajectory receives an independent seed
-      (important when using multiprocessing/fork).
+    Launches *n_trials* independent trajectories (Langevin or overdamped BD)
+    from random positions inside *start_basin* and records the time of first
+    entry into *target_basin*.
+
+    Parameters
+    ----------
+    potential : callable
+        ``potential(x) -> (U, F)``.
+    start_basin, target_basin : callable
+        ``basin(x) -> bool``.
+    n_trials : int
+        Number of independent trajectories.
+    max_time : float
+        Maximum simulation time per trajectory.
+    dt : float
+        Integration time step.
+    gamma : float
+        Friction coefficient.
+    kT : float
+        Thermal energy.
+    m : float
+        Mass.
+    start_bounds : sequence of (lo, hi) or None
+        Bounding box for initial-position sampling.
+    initial_velocity : array_like or ``'thermal'``
+        Fixed initial velocity vector, or ``'thermal'`` to draw from
+        the Maxwell–Boltzmann distribution.
+    processes : int or None
+        Worker processes (None = single process).
+    verbose : bool
+        Print progress.
+    regime : {'underdamped', 'overdamped'}
+        Dynamics type.
+    diffusion : scalar, callable, or None
+        Diffusion coefficient for overdamped mode.
+    overdamped_eps : float
+        FD step for ∇D.
+    bounds : sequence of (lo, hi) or None
+        Domain bounds (essential for cropped-FES workflows).
+    boundary : {'reflect', 'clip'} or None
+        Bound enforcement method.
+    base_seed : int or None
+        Base seed for reproducible per-trajectory seeds.
+
+    Returns
+    -------
+    dict
+        Keys: ``'mean'``, ``'std'``, ``'successful_trials'``,
+        ``'passage_times'`` (list), ``'success_rate'``,
+        ``'total_trials'``.
     """
     if bounds is not None and boundary is None:
         boundary = "reflect"
@@ -409,7 +517,18 @@ def compute_mfpt_1d(
     boundary=None,
     base_seed=None,
 ):
-    """1D analogue of :func:`compute_mfpt` (supports bounds for cropped 1D domains)."""
+    """1D analogue of :func:`compute_mfpt`.
+
+    Identical interface to :func:`compute_mfpt` but initial positions
+    are 1D scalars and *start_bounds* is a simple ``(xmin, xmax)``
+    interval.  Supports domain bounds for cropped 1D free-energy
+    surfaces.
+
+    Returns
+    -------
+    dict
+        Same keys as :func:`compute_mfpt`.
+    """
     if bounds is not None and boundary is None:
         boundary = "reflect"
 
@@ -542,11 +661,37 @@ def compute_bidirectional_mfpt(
     regime="underdamped",
     diffusion=None
 ):
-    """
-    Compute MFPT in both directions: A→B and B→A.
+    """Compute MFPT in both directions: A→B and B→A.
 
-    Returns:
-        dict with keys 'A_to_B' and 'B_to_A'
+    Convenience wrapper that calls :func:`compute_mfpt` twice.
+
+    Parameters
+    ----------
+    potential : callable
+        ``potential(x) -> (U, F)``.
+    basinA, basinB : callable
+        Basin membership tests.
+    n_trials : int
+        Trajectories per direction.
+    max_time, dt, gamma, kT, m : float
+        Dynamics parameters.
+    boundsA, boundsB : sequence of (lo, hi) or None
+        Sampling boxes for each basin.
+    initial_velocity : array_like or ``'thermal'``
+        Shared initial-velocity setting.
+    processes : int or None
+        Worker processes.
+    verbose : bool
+        Print progress.
+    regime : {'underdamped', 'overdamped'}
+        Dynamics type.
+    diffusion : scalar, callable, or None
+        Diffusion for overdamped mode.
+
+    Returns
+    -------
+    dict
+        ``{'A_to_B': <mfpt_dict>, 'B_to_A': <mfpt_dict>}``.
     """
     if verbose:
         print("Computing MFPT from Basin A to Basin B...")
@@ -609,13 +754,15 @@ def compute_bidirectional_mfpt_1d(
     regime="underdamped",
     diffusion=None
 ):
-    """
-    1D analogue of compute_bidirectional_mfpt:
-    MFPT A→B and B→A with possibly different starting bounds.
+    """1D analogue of :func:`compute_bidirectional_mfpt`.
+
+    Computes MFPT in both directions (A→B and B→A) using
+    :func:`compute_mfpt_1d`.
 
     Returns
     -------
-    results_AB, results_BA : two dicts as returned by compute_mfpt_1d
+    results_AB, results_BA : dict, dict
+        Two MFPT result dicts as returned by :func:`compute_mfpt_1d`.
     """
     res_AB = compute_mfpt_1d(
         potential,
@@ -657,8 +804,19 @@ def compute_bidirectional_mfpt_1d(
 
 
 def plot_mfpt_statistics(mfpt_results, title="MFPT Results"):
-    """
-    Plot histogram of passage times and basic statistics.
+    """Plot histograms of passage-time distributions.
+
+    Handles both single-direction results (one panel) and bidirectional
+    results (two panels side by side).
+
+    Parameters
+    ----------
+    mfpt_results : dict
+        Output of :func:`compute_mfpt`, :func:`compute_mfpt_1d`, or
+        :func:`compute_bidirectional_mfpt`.  If the dict contains
+        ``'A_to_B'`` and ``'B_to_A'`` keys, two histograms are plotted.
+    title : str
+        Figure super-title.
     """
     if isinstance(mfpt_results, dict) and "A_to_B" in mfpt_results:
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
@@ -710,11 +868,26 @@ def plot_mfpt_statistics(mfpt_results, title="MFPT Results"):
 
 
 def estimate_transition_rates(mfpt_results, verbose=True):
-    """
-    Estimate transition rates from MFPT (rate = 1/MFPT).
+    """Estimate transition rates from MFPT results (simple two-state model).
 
-    For bidirectional results, also computes equilibrium constant and
-    equilibrium populations for a simple two-state model.
+    For a single direction, :math:`k = 1/\\tau`.  For bidirectional
+    results, also computes the equilibrium constant
+    :math:`K_{eq} = k_{AB}/k_{BA}` and the steady-state populations
+    :math:`p_A, p_B`.
+
+    Parameters
+    ----------
+    mfpt_results : dict
+        Output of :func:`compute_mfpt` or :func:`compute_bidirectional_mfpt`.
+    verbose : bool
+        Print summary.
+
+    Returns
+    -------
+    dict or None
+        For bidirectional: ``{'k_AB', 'k_BA', 'K_eq', 'p_A_eq', 'p_B_eq'}``.
+        For single direction: ``{'rate'}``.
+        ``None`` if MFPTs are NaN.
     """
     if isinstance(mfpt_results, dict) and "A_to_B" in mfpt_results:
         tau_AB = mfpt_results["A_to_B"]["mean"]
@@ -791,17 +964,25 @@ def dw1d_basin_right_mfpt(x, x_cut=0.0):
 # =========================
 
 def _multi_basin_single_passage(args):
-    """Worker: single trajectory for multi-basin MFPT.
+    """Run one trajectory for multi-basin first-exit MFPT estimation.
+
+    Starting from a random point in basin *start_id*, integrate until
+    the trajectory enters a **different** basin or *max_time* elapses.
+
+    Parameters
+    ----------
+    args : tuple
+        Packed fields (for multiprocessing):
+
+        0. potential, 1. basin_network, 2. start_id, 3. max_time,
+        4. dt, 5. gamma, 6. kT, 7. m, 8. initial_velocity_mode,
+        9. regime, 10. diffusion, 11. overdamped_eps,
+        [12. bounds, 13. boundary, 14. seed]
 
     Returns
     -------
-    (start_id, target_id, t_first_hit)
-        target_id may be None if no transition is observed within max_time.
-
-    Backwards compatibility
-    -----------------------
-    Older code passed 12 fields. Newer code may append:
-      - bounds, boundary, seed
+    tuple (start_id, target_id, t_first_hit)
+        *target_id* is ``None`` if no exit occurred within *max_time*.
     """
     (
         potential,
@@ -1021,24 +1202,57 @@ def compute_mfpt_network(
 ):
     """Estimate a multi-basin MFPT network via overdamped BD first-exit simulations.
 
-    This runs *trials_per_basin* trajectories starting from each basin minimum and
-    records the first basin hit (if any) within *max_time*. It returns MFPTs, counts,
-    and first-exit statistics suitable for CTMC estimation.
-
-    Performance notes
-    -----------------
-    When *n_procs>1*, this function uses a multiprocessing pool with an initializer
-    so large objects (potential, basin_network) are sent *once per worker* instead of
-    per trial. Trials are also grouped in small batches (*batch_size*) to reduce IPC.
+    For each basin in *basin_network*, *trials_per_basin* overdamped
+    Brownian dynamics trajectories are launched from the basin minimum.
+    The first basin hit (if any) within *max_time* is recorded.  The
+    returned dictionary contains MFPT matrices, exit-count tables, and
+    first-exit statistics suitable for CTMC rate-matrix estimation via
+    :func:`estimate_rate_matrix`.
 
     Parameters
     ----------
-    batch_size:
-        Number of trajectories per task submitted to the pool. Increase (e.g. 20–100)
-        if you see significant multiprocessing overhead.
-    mp_start_method:
-        If provided, forces the multiprocessing context (e.g. "fork", "spawn").
-        On Linux, "fork" is typically best for large read-only objects.
+    potential : callable
+        ``potential(x) -> (U, F)``.
+    basin_network : BasinNetwork
+        Multi-basin partition on a 2D grid.
+    dt : float
+        Integration time step.
+    max_time : float
+        Maximum simulation time per trajectory.
+    D : float or ndarray or None
+        Diffusion coefficient (default 1.0).
+    beta : float or None
+        Inverse temperature :math:`1/(k_BT)` (default 1.0).
+    bounds : sequence of (lo, hi) or None
+        Domain bounds.
+    boundary : str
+        Bound enforcement mode (default ``'reflect'``).
+    trials_per_basin : int or None
+        Number of trajectories per basin (default 1000).
+    n_procs : int or None
+        Worker processes (default 1 = serial).
+    seed : int or None
+        Master seed for reproducibility.
+    batch_size : int or None
+        Trajectories per pool task; increase (20–100) to reduce IPC
+        overhead.
+    mp_start_method : str or None
+        Force multiprocessing context (e.g. ``'fork'``, ``'spawn'``).
+
+    Returns
+    -------
+    dict
+        Keys include ``'mfpt'``, ``'mfpt_matrix'``, ``'n_samples'``,
+        ``'exit_to_counts'``, ``'censored_counts'``,
+        ``'transition_times'``, ``'first_exit_times'``,
+        ``'attempts_per_basin'``, ``'params'``, ``'method'``.
+
+    Performance Notes
+    -----------------
+    When *n_procs > 1*, a multiprocessing pool is created with an
+    initializer so that large objects (potential, basin_network) are
+    transmitted only once per worker.  Trials are grouped into small
+    batches to reduce inter-process communication overhead.
     """
 
     _MISSING = object()

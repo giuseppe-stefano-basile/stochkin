@@ -1,3 +1,32 @@
+"""stochkin.committor
+===================
+
+Committor (splitting probability) analysis.
+
+The committor :math:`q(x)` is the probability that a trajectory started
+at *x* reaches basin **B** before basin **A**.  This module provides
+two complementary approaches:
+
+1. **Trajectory-based (shooting) committor** – launch many short
+   trajectories from each grid point and count outcomes.
+   Works for both underdamped (Langevin) and overdamped (Brownian)
+   dynamics.  Suitable for 1D and 2D grids.
+
+   - :func:`run_short_trajectory` – single trajectory worker.
+   - :func:`committor_point` – estimate *q* at one point (many trials).
+   - :func:`committor_map_parallel` – 2D grid committor with multiprocessing.
+   - :func:`committor_profile_1d` – 1D committor profile.
+
+2. **FPE-based (grid) committor** – solve the backward Fokker–Planck
+   equation :math:`L q = 0` with Dirichlet boundary conditions on a
+   discrete grid built from a :class:`~stochkin.potentials.BasinNetwork`.
+
+   - :func:`committor_map_fpe` – solve for *q(x, y)* via sparse linear algebra.
+
+Example basin functions (:func:`basinA`, :func:`basinB`) for the
+central-well / ring potential are included for quick prototyping.
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 from multiprocessing import Pool
@@ -33,7 +62,49 @@ def run_short_trajectory(
     bounds=None,
     boundary=None,
 ):
-    
+    """Run a single short trajectory and report which basin is hit first.
+
+    This is the inner workhorse of the shooting-committor algorithm.
+    Starting from ``(x0, v0)``, the trajectory is integrated until it
+    enters *basinA* (returns ``'A'``), *basinB* (returns ``'B'``), or
+    *max_time* is exceeded (returns ``None``).
+
+    Parameters
+    ----------
+    potential : callable
+        ``potential(x) -> (U, F)`` with ``F = −∇U``.
+    x0 : array_like
+        Initial position.
+    v0 : array_like
+        Initial velocity (ignored for overdamped dynamics).
+    max_time : float
+        Maximum simulation time.
+    dt : float
+        Integration time step.
+    gamma : float
+        Friction coefficient.
+    kT : float
+        Thermal energy.
+    basinA, basinB : callable
+        ``basin(x) -> bool`` indicating membership.
+    m : float
+        Mass (default 1).
+    regime : {'underdamped', 'overdamped'}
+        Dynamics type.
+    diffusion : scalar, callable, or None
+        Diffusion coefficient for overdamped mode.
+    overdamped_eps : float
+        Finite-difference step for ∇D.
+    bounds : sequence of (lo, hi) or None
+        Bounding box for position enforcement.
+    boundary : {'reflect', 'clip'} or None
+        How to enforce *bounds*.
+
+    Returns
+    -------
+    str or None
+        ``'A'``, ``'B'``, or ``None`` if neither basin was reached.
+    """
     x = np.array(x0, dtype=float).ravel()
     v = np.array(v0, dtype=float).ravel()
     t = 0.0
@@ -82,8 +153,31 @@ def run_short_trajectory(
     return None
 
 def committor_point(args):
-    """
-    Compute committor at a single grid point.
+    """Estimate the committor at a single grid point via trajectory shooting.
+
+    Runs *n_trials* short trajectories from ``(x0, v0)`` and returns
+    the fraction that reach basin B first:
+    :math:`q = n_B / (n_A + n_B)`.  Returns ``NaN`` if no trajectory
+    reached either basin.
+
+    Parameters
+    ----------
+    args : tuple
+        Positional arguments packed as a tuple for compatibility with
+        ``multiprocessing.Pool.map``.  Fields (by index)::
+
+            0  potential      5  n_trials     10  m
+            1  x0             6  max_time     11  regime (optional)
+            2  v0             7  dt           12  diffusion (optional)
+            3  basinA         8  gamma        13  overdamped_eps (optional)
+            4  basinB         9  kT           14  bounds (optional)
+                                              15  boundary (optional)
+                                              16  seed (optional)
+
+    Returns
+    -------
+    float
+        Estimated committor *q ∈ [0, 1]* (or ``NaN``).
     """
     # Backwards compatible positional parsing: older code passes 11 fields.
     potential = args[0]
@@ -157,6 +251,58 @@ def committor_map_parallel(
     boundary=None,
     base_seed=None,
 ):
+    """Compute a 2D committor map using parallel trajectory shooting.
+
+    For each point on a ``grid_size × grid_size`` grid, *n_trials*
+    short trajectories are launched and the fraction reaching basin B
+    first is recorded.
+
+    Parameters
+    ----------
+    potential : callable
+        ``potential(x) -> (U, F)``.
+    basinA, basinB : callable
+        ``basin(x) -> bool``.
+    xlim, ylim : tuple
+        Grid bounds.
+    grid_size : int
+        Number of grid points per axis.
+    n_trials : int
+        Shooting trials per grid point.
+    max_time : float
+        Maximum trajectory time.
+    dt : float
+        Time step.
+    gamma : float
+        Friction.
+    kT : float
+        Thermal energy.
+    m : float
+        Mass (default 1).
+    processes : int or None
+        Number of worker processes (None = all CPUs).
+    regime : {'underdamped', 'overdamped'}
+        Dynamics type.
+    diffusion : scalar, callable, or None
+        Diffusion for overdamped mode.
+    overdamped_eps : float
+        FD step for ∇D.
+    bounds : sequence of (lo, hi) or None
+        Bounding box.
+    boundary : {'reflect', 'clip'} or None
+        Bound enforcement mode.
+    base_seed : int or None
+        Base seed for reproducible per-point seeds.
+
+    Returns
+    -------
+    xs : ndarray
+        x-axis grid.
+    ys : ndarray
+        y-axis grid.
+    Q : ndarray, shape (grid_size, grid_size)
+        Committor values *q(x, y) ∈ [0, 1]*.
+    """
     xs = np.linspace(xlim[0], xlim[1], grid_size)
     ys = np.linspace(ylim[0], ylim[1], grid_size)
 
@@ -303,46 +449,41 @@ def committor_map_fpe(
     sparse=True,
     energy_buffer_kT=None,
 ):
-    """
-    Compute the committor q(x,y) on the grid by solving the backward FP
-    equation L q = 0 with boundary conditions q=0 on basinA and q=1 on
-    basinB.
+    """Compute the committor *q(x, y)* by solving the backward FPE on a grid.
+
+    Solves :math:`L q = 0` with Dirichlet conditions
+    :math:`q = 0` on basin A and :math:`q = 1` on basin B, where *L*
+    is the detailed-balance-preserving discrete Fokker–Planck generator
+    built from the free-energy surface.
 
     Parameters
     ----------
     basin_network : BasinNetwork
-        Basin partition built on top of a 2D grid (xs, ys, U, labels).
-        We assume attributes:
-            - xs, ys : 1D arrays of grid coordinates
-            - U      : 2D array of free energies
-            - labels : 2D int array of basin labels
-    D : float or 2D array (nx, ny)
-        Scalar diffusion coefficient on the same grid as U.
+        Must provide ``xs``, ``ys``, ``U``, and ``labels``.
+    D : float or ndarray, shape (nx, ny)
+        Diffusion coefficient (scalar or field).
     beta : float
-        Inverse temperature 1 / (k_B T).
+        Inverse temperature :math:`1/(k_BT)`.
     basinA_id, basinB_id : int
-        Integer basin labels for the two metastable states.
-    sparse : bool, optional
-        Passed through to build_fp_generator_from_fes.
-    energy_buffer_kT : float or None, optional
-        If not None, A and B are restricted to low-energy cores:
-            A_core = {i | label=i_A and U_i <= U_min_A + energy_buffer_kT / beta}
-        and similarly for B. The rest of the grid becomes "unknown"
-        region where the PDE is solved. If None (default), all cells
-        with label basinA_id / basinB_id are treated as boundary.
+        Integer basin labels for the two absorbing states.
+    sparse : bool
+        Use sparse linear algebra (default ``True``).
+    energy_buffer_kT : float or None
+        If given, restrict A and B to low-energy cores within
+        *energy_buffer_kT* of the basin minimum (in kT units).
+        The remainder of each basin becomes part of the solved domain.
 
     Returns
     -------
-    xs, ys : 1D arrays
-        Grid coordinates (copied from basin_network).
-    q_grid : 2D array (nx, ny)
-        Committor values in [0, 1] on the grid.
+    xs, ys : ndarray
+        Grid coordinate arrays.
+    q_grid : ndarray, shape (nx, ny)
+        Committor values in [0, 1].
 
-    Notes
-    -----
-    - If, after defining A and B, there are no unknown states left
-      (i.e., every grid point is in A or B), the function returns the
-      trivial committor (0 in A, 1 in B) without solving a linear system.
+    Raises
+    ------
+    ImportError
+        If SciPy sparse is not available.
     """
     if not _HAVE_SCIPY_SPARSE_LINALG:
         raise ImportError(

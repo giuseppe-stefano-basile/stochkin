@@ -1,3 +1,20 @@
+"""stochkin.replicas
+==================
+
+Parallel replica dynamics for sampling free-energy landscapes.
+
+This module runs *M* independent short simulations (“replicas”) in
+parallel and accumulates position- and energy-histograms.  The
+averaged histograms approximate the canonical (Boltzmann) distribution
+and can be compared with the analytic free-energy surface.
+
+- :func:`run_replicas` / :func:`single_replica` – 2D replicas
+  (underdamped Langevin via BAOAB or overdamped BD).
+- :func:`run_replicas_1d` / :func:`single_replica_1d` – 1D replicas.
+
+All replica functions are multiprocessing-safe (top-level, picklable).
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 from multiprocessing import Pool
@@ -9,6 +26,30 @@ from .integrators import baobab_2d, overdamped_bd
 # ======================================================================
 
 def single_replica(args):
+    """Run a single 2D replica and return position/energy histograms.
+
+    This is a top-level, picklable worker for ``multiprocessing.Pool``.
+
+    Parameters
+    ----------
+    args : tuple
+        Packed fields:
+
+        0. potential, 1. max_time, 2. dt, 3. gamma, 4. kT,
+        5. initial_position, 6. initial_velocity,
+        7. save_frequency, 8. bins2d, 9. binsE, 10. m,
+        11. pos_range, 12. energy_range,
+        13. regime (``'underdamped'`` or ``'overdamped'``),
+        14. diffusion,
+        15. burn_in_steps, 16. bounds, 17. boundary, 18. seed.
+
+    Returns
+    -------
+    Hpos : ndarray, shape (nx, ny)
+        2D position histogram.
+    HE : ndarray, shape (binsE,)
+        1D energy histogram.
+    """
     (
         potential, max_time, dt, gamma, kT,
         initial_position, initial_velocity,
@@ -107,18 +148,65 @@ def run_replicas(
     base_seed=None,
     plot=True,
 ):
-    """
-    Run M independent 2D replicas (underdamped or overdamped) in parallel
-    and average histograms.
+    """Run *M* independent 2D replicas in parallel and average histograms.
 
-    Notes
-    -----
-    - `bins` may be an int (nx=ny=bins) or a tuple (nx, ny).
-    - `burn_in_fraction` discards the initial fraction of integration steps
-      before histogramming (applies to both regimes).
-    - For overdamped runs, `bounds` + `boundary` are forwarded to `overdamped_bd`.
-    - `base_seed` controls reproducible initialization and per-replica RNG seeds.
-    - Set `plot=False` to disable the diagnostic figures.
+    Each replica is a short simulation (underdamped Langevin or
+    overdamped BD) with slightly perturbed initial conditions.
+    Histograms of position and energy are accumulated and averaged.
+
+    Parameters
+    ----------
+    potential : callable
+        ``potential(x) -> (U, F)``.
+    M : int
+        Number of replicas.
+    max_time : float
+        Integration time per replica.
+    dt : float
+        Time step.
+    gamma : float
+        Friction coefficient.
+    kT : float
+        Thermal energy.
+    initial_position : array_like
+        Nominal starting position (slightly perturbed per replica).
+    initial_velocity : array_like
+        Nominal starting velocity.
+    save_frequency : int
+        Steps between saved frames.
+    bins : int or (int, int)
+        Histogram bins for position (``nx`` or ``(nx, ny)``).
+    m : float
+        Mass.
+    x_range : ((xmin, xmax), (ymin, ymax))
+        Position histogram range.
+    energy_range : (emin, emax)
+        Energy histogram range.
+    regime : {'underdamped', 'overdamped'}
+        Dynamics type.
+    diffusion : scalar, callable, or None
+        Diffusion for overdamped mode.
+    processes : int or None
+        Worker processes (None or 1 = serial).
+    bins_energy : int or None
+        Separate energy-histogram bin count (defaults to *bins*).
+    burn_in_fraction : float
+        Fraction of initial trajectory to discard before histogramming.
+    bounds : sequence of (lo, hi) or None
+        Domain bounds (overdamped only).
+    boundary : str
+        Bound enforcement mode (default ``'reflect'``).
+    base_seed : int or None
+        Master seed for reproducibility.
+    plot : bool
+        If ``True`` (default), show diagnostic position and energy plots.
+
+    Returns
+    -------
+    hist2d_avg : ndarray
+        Averaged 2D position histogram.
+    histE_avg : ndarray
+        Averaged 1D energy histogram.
     """
     pos_range = x_range
 
@@ -226,10 +314,28 @@ def run_replicas(
 # ======================================================================
 
 def single_replica_1d(args):
-    """
-    1D analogue of single_replica:
-    run a single replica on a 1D potential and return histograms
-    over x and over energy.
+    """Run a single 1D replica and return position/energy histograms.
+
+    This is a top-level, picklable worker for ``multiprocessing.Pool``.
+
+    Parameters
+    ----------
+    args : tuple
+        Packed fields:
+
+        0. potential, 1. max_time, 2. dt, 3. gamma, 4. kT,
+        5. initial_position, 6. initial_velocity,
+        7. save_frequency, 8. bins, 9. m,
+        10. pos_range, 11. energy_range,
+        12. regime (``'underdamped'`` or ``'overdamped'``),
+        13. diffusion.
+
+    Returns
+    -------
+    Hx : ndarray, shape (bins,)
+        1D position histogram.
+    HE : ndarray, shape (bins,)
+        1D energy histogram.
     """
     (
         potential, max_time, dt, gamma, kT,
@@ -303,13 +409,55 @@ def run_replicas_1d(
     diffusion=None,
     processes=None,
 ):
-    """
-    Run M independent 1D replicas and average histograms.
+    """Run *M* independent 1D replicas in parallel and average histograms.
+
+    1D analogue of :func:`run_replicas`.  Each replica is slightly
+    perturbed in initial conditions.  Position and energy histograms
+    are averaged over all replicas.
+
+    Parameters
+    ----------
+    potential : callable
+        ``potential(x) -> (U, F)``.
+    M : int
+        Number of replicas.
+    max_time : float
+        Integration time per replica.
+    dt : float
+        Time step.
+    gamma : float
+        Friction.
+    kT : float
+        Thermal energy.
+    initial_position : array_like
+        Nominal starting position.
+    initial_velocity : array_like
+        Nominal starting velocity.
+    save_frequency : int
+        Steps between saved frames.
+    bins : int
+        Number of histogram bins.
+    m : float
+        Mass.
+    x_range : (xmin, xmax)
+        Position histogram range.
+    energy_range : (emin, emax)
+        Energy histogram range.
+    plot : bool
+        Show diagnostic plots.
+    regime : {'underdamped', 'overdamped'}
+        Dynamics type.
+    diffusion : scalar, callable, or None
+        Diffusion for overdamped mode.
+    processes : int or None
+        Worker processes (None = all CPUs).
 
     Returns
     -------
-    Hx_avg : 1D histogram over x
-    HE_avg : 1D histogram over energy
+    Hx_avg : ndarray
+        Averaged 1D position histogram.
+    HE_avg : ndarray
+        Averaged 1D energy histogram.
     """
     pos_range = x_range
 

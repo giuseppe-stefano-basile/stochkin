@@ -1,11 +1,51 @@
-# potentials.py
+"""stochkin.potentials
+====================
+
+Analytic model potentials and basin-partitioning utilities.
+
+This module provides:
+
+* **Analytic potentials** – standard 1D and 2D test surfaces commonly used
+  in molecular-dynamics and stochastic-kinetics studies.  Every potential is
+  a callable ``potential(x) -> (U, F)`` returning the energy *U* and the
+  force vector *F = −∇U*.
+
+  - :func:`double_well_2d` – quartic double-well in 2D.
+  - :func:`simple_double_well_2d` – symmetric two-state double-well with
+    harmonic y-confinement.
+  - :func:`double_well_1d` / :func:`make_double_well_1d` – 1D double-well.
+  - :func:`mexican_hat_potential` – radially symmetric sombrero potential.
+  - :func:`central_well_barrier_ring_potential` – ring minimum with central
+    Gaussian well and barrier.
+  - :func:`muller_potential` – Müller–Brown four-Gaussian surface.
+  - :class:`StringPotential` / :func:`make_potential_from_string` – user-defined
+    potential from a string expression.
+
+* **Basin detection** – automatic identification of metastable basins on a
+  gridded free-energy surface and construction of :class:`BasinNetwork` /
+  :class:`BasinNetwork1D` data structures used by downstream MFPT, CTMC,
+  and committor analyses.
+
+  - :func:`sample_potential_grid` – evaluate a potential on a 2D grid.
+  - :func:`build_basin_network_from_potential` / :func:`detect_basins_for_mfpt` –
+    detect 2D basins.
+  - :func:`build_basin_network_from_fes_1d` / :func:`detect_basins_for_mfpt_1d` –
+    detect 1D basins.
+  - :func:`build_core_labels_from_full_labels` – shrink basins to low-energy
+    cores for CTMC boundary-value problems.
+
+Notes
+-----
+All potentials are picklable so that they can be used with
+``multiprocessing.Pool`` for parallel trajectory calculations.
+"""
 
 import numpy as np
 from dataclasses import dataclass
 from typing import Optional
 import numpy as np
 import matplotlib.pyplot as plt
-from functools import partial   # <--- ADD THIS
+from functools import partial
 import warnings
 
 
@@ -13,16 +53,23 @@ import warnings
 # Analytic potentials
 # =========================
 class StringPotential:
-    """
-    Picklable potential built from a string expression, e.g.:
+    """Picklable potential built from a string expression.
 
-        expr = "0.5*(x[0]**2 + 2*x[1]**2)"
+    The expression must use ``x[i]`` to refer to the *i*-th component of
+    the position vector and may call any function available in NumPy via
+    the ``np`` namespace.
 
-    Use as:
-        pot = StringPotential(expr)
-        U, F = pot(x)
+    Parameters
+    ----------
+    expr : str
+        A valid Python expression, e.g. ``"0.5*(x[0]**2 + 2*x[1]**2)"``.
+    eps : float, optional
+        Step size for the central-difference gradient (default 1e-6).
 
-    where x can be 1D or 2D (or higher) NumPy-like array.
+    Examples
+    --------
+    >>> pot = StringPotential("0.5*(x[0]**2 + 2*x[1]**2)")
+    >>> U, F = pot(np.array([1.0, 0.5]))
     """
 
     def __init__(self, expr, eps=1e-6):
@@ -46,14 +93,46 @@ class StringPotential:
 
 
 def make_potential_from_string(expr, eps=1e-6):
-    """
-    expr: string, e.g. "0.5*(x[0]**2 + 2*x[1]**2)"
-    Returns a *picklable* object that computes (energy, force).
+    """Create a picklable potential from a Python math expression.
+
+    Parameters
+    ----------
+    expr : str
+        Expression using ``x[i]`` for coordinates and ``np`` for NumPy,
+        e.g. ``"0.5*(x[0]**2 + 2*x[1]**2)"``.
+    eps : float, optional
+        Central-difference step for force evaluation (default 1e-6).
+
+    Returns
+    -------
+    StringPotential
+        Callable ``pot(x) -> (U, F)`` where *F = −∇U*.
     """
     return StringPotential(expr, eps=eps)
 
 
 def double_well_2d(x, a=1.0, b=1.3):
+    """Quartic double-well in 2D.
+
+    .. math::
+        U(x_1, x_2) = a(x_1^4 + x_2^4) - b(x_1^2 + x_2^2)
+
+    Parameters
+    ----------
+    x : array_like, shape (2,)
+        Position ``[x1, x2]``.
+    a : float
+        Quartic coefficient (default 1.0).
+    b : float
+        Quadratic coefficient (default 1.3).
+
+    Returns
+    -------
+    U : float
+        Potential energy.
+    F : ndarray, shape (2,)
+        Force vector *F = −∇U*.
+    """
     x = np.asarray(x, dtype=float)
     U = a * (x[0] ** 4 + x[1] ** 4) - b * (x[0] ** 2 + x[1] ** 2)
     F = -np.array(
@@ -66,12 +145,29 @@ def double_well_2d(x, a=1.0, b=1.3):
 
 
 def mexican_hat_potential(x, a=-1.0, b=1.0):
-    """
-    2D Mexican hat potential.
-    x : np.array([x1, x2])
-    a : quadratic coefficient (negative for sombrero shape)
-    b : quartic coefficient (positive for stability)
-    Returns: (energy, force)
+    r"""Radially symmetric 2D Mexican-hat (sombrero) potential.
+
+    .. math::
+        U(r) = a \, r^2 + b \, r^4, \quad r = |x|
+
+    With ``a < 0`` and ``b > 0`` the potential has a ring of minima at
+    :math:`r_{\min} = \sqrt{-a/(2b)}`.
+
+    Parameters
+    ----------
+    x : array_like, shape (2,)
+        Position ``[x1, x2]``.
+    a : float
+        Quadratic coefficient (negative for sombrero shape, default −1).
+    b : float
+        Quartic coefficient (positive for stability, default 1).
+
+    Returns
+    -------
+    U : float
+        Potential energy.
+    F : ndarray, shape (2,)
+        Force vector *F = −∇U*.
     """
     x = np.asarray(x, dtype=float)
     r2 = np.dot(x, x)  # |x|^2
@@ -84,17 +180,34 @@ def mexican_hat_potential(x, a=-1.0, b=1.0):
 def central_well_barrier_ring_potential(
     x, a=1.0, b=1.0, A=0.25, sigma=0.20
 ):
-    """
-    2D potential with a center well, a barrier, and ring minima.
-    U(r) = b*r^4 - a*r^2 - A*exp(-r^2/sigma^2),  r = |x|
+    r"""2D ring potential with a central Gaussian well and an annular barrier.
 
-    Parameters:
-      a > 0, b > 0  : set ring structure (sombrero-like)
-      A > 0         : depth of central well (Gaussian bump down)
-      sigma > 0     : width of central well
+    .. math::
+        U(r) = b\,r^4 - a\,r^2 - A\,\exp(-r^2/\sigma^2), \quad r = |x|
 
-    Returns:
-      (energy, force) where force is a 2D vector
+    The potential supports three distinct regions: a central well (depth
+    controlled by *A* and *σ*), an annular barrier, and a ring of minima
+    at roughly :math:`r_{\min} \approx \sqrt{a/(2b)}`.
+
+    Parameters
+    ----------
+    x : array_like, shape (2,)
+        Position ``[x1, x2]``.
+    a : float
+        Quadratic coefficient (> 0, controls ring radius).
+    b : float
+        Quartic coefficient (> 0, controls ring steepness).
+    A : float
+        Depth of the central Gaussian well (> 0).
+    sigma : float
+        Width of the central Gaussian well (> 0).
+
+    Returns
+    -------
+    U : float
+        Potential energy.
+    F : ndarray, shape (2,)
+        Force vector *F = −∇U*.
     """
     x = np.asarray(x, dtype=float)
     r2 = np.dot(x, x)
@@ -108,10 +221,29 @@ def central_well_barrier_ring_potential(
 
 
 def muller_potential(x, E_clip=50.0):
-    """
-    Müller–Brown potential with analytic force and numerical safeguards.
-    x : array-like [x, y]
-    Returns: (energy, force)
+    """Müller–Brown potential (four-Gaussian surface).
+
+    The Müller–Brown potential is a classic benchmark for transition-path
+    and rare-event methods.  It features three local minima connected by
+    two saddle points.
+
+    Parameters
+    ----------
+    x : array_like, shape (2,)
+        Position ``[x, y]``.
+    E_clip : float, optional
+        Exponent clipping threshold to prevent overflow (default 50).
+
+    Returns
+    -------
+    U : float
+        Potential energy.
+    F : ndarray, shape (2,)
+        Force vector *F = −∇U*.
+
+    References
+    ----------
+    K. Müller and L. D. Brown, *Theor. Chim. Acta* **53**, 75 (1979).
     """
     x = np.asarray(x, dtype=float)
     if x.shape != (2,):
@@ -160,32 +292,31 @@ def muller_potential(x, E_clip=50.0):
 
 
 def simple_double_well_2d(x, a=10.0, x0=1.0, k_y=10):
-    """
-    Simple 2-state double well in 2D.
+    r"""Symmetric two-state double well in 2D with harmonic y-confinement.
 
-    U(x, y) = a (x^2 - x0^2)^2 + 0.5 * k_y * y^2
+    .. math::
+        U(x_1, x_2) = a\,(x_1^2 - x_0^2)^2 + \tfrac{1}{2} k_y\, x_2^2
 
-    - Two minima at (x, y) = (±x0, 0)
-    - Barrier at (0, 0) of height a * x0^4
-    - Harmonic confinement along y
+    Two minima at :math:`(\pm x_0, 0)` separated by a barrier of height
+    :math:`a\,x_0^4` at the origin.
 
     Parameters
     ----------
-    x : array-like, shape (2,)
-        [x, y] coordinates
+    x : array_like, shape (2,)
+        Position ``[x1, x2]``.
     a : float
-        Double well strength in x
+        Double-well strength along *x* (default 10).
     x0 : float
-        Location of the minima along x
+        Location of the two minima along *x* (default 1).
     k_y : float
-        Harmonic stiffness along y
+        Harmonic stiffness along *y* (default 10).
 
     Returns
     -------
     U : float
-        Potential energy
+        Potential energy.
     F : ndarray, shape (2,)
-        Force vector = -∇U
+        Force vector *F = −∇U*.
     """
     x = np.asarray(x, dtype=float)
     if x.shape != (2,):
@@ -263,21 +394,24 @@ def make_double_well_1d(a=1.0, x0=1.0):
 
 @dataclass
 class Basin:
-    """
-    Simple description of a basin around a local minimum.
+    """Description of a 2D metastable basin on a gridded free-energy surface.
+
+    Instances are created automatically by :func:`build_basin_network_from_potential`
+    and stored inside :class:`BasinNetwork`.
 
     Attributes
     ----------
     id : int
-        Basin index (0..N-1).
-    minimum : np.ndarray shape (2,)
-        Coordinates (x, y) of the minimum.
+        Basin index (0 … N−1).
+    minimum : ndarray, shape (2,)
+        Coordinates ``(x, y)`` of the local free-energy minimum.
     f_min : float
-        Potential/free-energy value at the minimum.
+        Free-energy value at the minimum.
     radius : float
-        Rough spatial extent of the basin (max distance of assigned grid points).
-    bounds : np.ndarray shape (2,2)
-        [[xmin, xmax], [ymin, ymax]] of assigned grid points.
+        Approximate spatial extent (max distance from minimum to any assigned
+        grid point).
+    bounds : ndarray, shape (2, 2)
+        Rectangular bounding box ``[[xmin, xmax], [ymin, ymax]]``.
     """
     id: int
     minimum: np.ndarray
@@ -288,17 +422,29 @@ class Basin:
 
 @dataclass
 class BasinNetwork:
-    """
-    Basins defined on a regular 2D grid.
+    """Collection of metastable basins on a regular 2D grid.
+
+    This is the central data structure for multi-basin analyses (MFPT,
+    CTMC generator estimation, committor maps).  It holds the basin
+    definitions together with the underlying grid and label arrays.
 
     Attributes
     ----------
     basins : list[Basin]
-    xs, ys : 1D arrays of grid coordinates
-    U      : 2D array of potential/free energy values (shape (nx, ny))
-    labels : 2D int array, same shape as U.
-             labels[i, j] is the basin id of grid point (xs[i], ys[j]),
-             or -1 if the point does not belong to any basin (e.g. NaN).
+        List of detected :class:`Basin` objects.
+    xs, ys : ndarray
+        1D coordinate arrays defining the rectangular grid.
+    U : ndarray, shape (nx, ny)
+        Free-energy / potential values on the grid.
+    labels : ndarray of int, shape (nx, ny)
+        Basin assignment for each grid point.  ``labels[i, j]`` gives the
+        basin id of grid point ``(xs[i], ys[j])``, or ``−1`` if the point
+        is unassigned (e.g. NaN/inf regions).
+    labels_full : ndarray or None
+        Copy of the full-partition labels before any core-shrinkage.
+    core_labels : ndarray or None
+        Labels restricted to low-energy basin cores (set by
+        :func:`build_core_labels_from_full_labels`).
     """
     basins: list
     xs: np.ndarray
@@ -363,21 +509,20 @@ class BasinNetwork:
 
 @dataclass
 class Basin1D:
-    """
-    1D basin around a local minimum.
+    """Description of a 1D metastable basin on a gridded free-energy profile.
 
     Attributes
     ----------
-    id      : int
-        Basin index (0..N-1).
+    id : int
+        Basin index (0 … N−1).
     minimum : float
-        Coordinate of the minimum.
-    f_min   : float
-        Potential / free-energy at the minimum.
-    radius  : float
-        Max |x - minimum| of assigned grid points.
-    bounds  : np.ndarray shape (2,)
-        [xmin, xmax] of assigned grid points.
+        Coordinate of the local free-energy minimum.
+    f_min : float
+        Free-energy value at the minimum.
+    radius : float
+        Half-width: max distance from the minimum among assigned grid points.
+    bounds : ndarray, shape (2,)
+        ``[xmin, xmax]`` of assigned grid points.
     """
     id: int
     minimum: float
@@ -388,17 +533,22 @@ class Basin1D:
 
 @dataclass
 class BasinNetwork1D:
-    """
-    Basins defined on a regular 1D grid.
+    """Collection of metastable basins on a 1D free-energy profile.
+
+    This is the 1D analogue of :class:`BasinNetwork`.  It is consumed
+    by :func:`~stochkin.fpe.compute_ctmc_generator_fpe_1d` and the
+    high-level workflow functions in :mod:`stochkin.workflows`.
 
     Attributes
     ----------
     basins : list[Basin1D]
-    s      : 1D array of grid coordinates
-    U      : 1D array of potential / FES values
-    labels : 1D int array, same length as s
-             labels[i] is the basin id of s[i],
-             or -1 if the point does not belong to any basin.
+        List of detected :class:`Basin1D` objects.
+    s : ndarray
+        1D coordinate grid.
+    U : ndarray
+        Free-energy values on the grid.
+    labels : ndarray of int
+        Basin id for each grid point, or ``−1`` if unassigned.
     """
     basins: list
     s: np.ndarray
@@ -769,20 +919,41 @@ def build_core_labels_from_full_labels(
     core_fraction: float = 0.05,
     core_cut: Optional[float] = None,
 ) -> np.ndarray:
-    """Build *core* basin labels from a full partition.
+    """Shrink full-partition basin labels to low-energy *core* sets.
 
-    This is meant for kinetics (committors / MFPT / CTMC) where basins should be
-    small *core sets* separated by an unlabeled transition region.
+    Core sets are small regions around each basin minimum.  They are used
+    as Dirichlet boundary conditions in CTMC backward-equation solves
+    (committors, exit times) so that the transition region between basins
+    is part of the *unknown* domain.
 
-    Rules per basin b:
-      - If core_cut is provided (in the same units as U_grid):
-            core = {cells with labels_full==b and U <= Umin(b) + core_cut}
-      - Else (default):
-            core = lowest `core_fraction` energies within basin b.
+    For each basin *b* one of two rules applies:
 
-    All non-core cells are labeled as -1.
+    * If *core_cut* is provided (absolute energy units)::
 
-    Guarantees at least one core cell per basin (the minimum cell).
+          core = {cells with label == b and U ≤ U_min(b) + core_cut}
+
+    * Otherwise (default)::
+
+          core = lowest *core_fraction* energies within basin b
+
+    At least one cell (the minimum) is always included per basin.
+
+    Parameters
+    ----------
+    U_grid : ndarray
+        Free-energy values (1D or 2D, same shape as *labels_full*).
+    labels_full : ndarray of int
+        Full-partition labels (≥ 0 inside a basin, −1 elsewhere).
+    core_fraction : float
+        Quantile fraction (0, 1] of each basin to keep (default 0.05 = 5 %).
+    core_cut : float or None
+        Absolute energy cutoff above the basin minimum.  Overrides
+        *core_fraction* when provided.
+
+    Returns
+    -------
+    core_labels : ndarray of int
+        Same shape as *labels_full*; −1 outside cores.
     """
     U = np.asarray(U_grid, dtype=float)
     lab = np.asarray(labels_full, dtype=int)
@@ -834,28 +1005,38 @@ def build_basin_network_from_potential(
     core_fraction: float = 0.05,
     core_cut: Optional[float] = None,
 ):
-    """
-    Automatic detection of basins of attraction for MFPT analysis.
+    """Detect metastable basins on a 2D potential / FES.
 
-    1) Samples U(x) on a grid.
-    2) Finds local minima.
-    3) Assigns each grid point to the nearest minimum in (x,y) space.
-    4) Builds Basin objects with rough radius and bounds.
+    The algorithm:
+
+    1. Samples *U(x, y)* on a regular ``nx × ny`` grid.
+    2. Finds local minima (strict 8-neighbour comparison).
+    3. Assigns each grid point to the nearest minimum (Voronoi-like).
+    4. Optionally shrinks basins to low-energy *cores* for CTMC analyses.
 
     Parameters
     ----------
-    potential : callable x->[U, F]
-        Analytic potential or FESPotential.
-    xlim, ylim : tuple of floats
-        Limits of the grid in x and y.
+    potential : callable
+        ``potential([x, y]) -> (U, F)`` with ``F = −∇U``.
+    xlim, ylim : tuple of float
+        Grid bounds ``(lo, hi)``.
     nx, ny : int
-        Number of grid points along x and y.
+        Grid resolution.
     max_basins : int or None
-        If not None, keep only the lowest-energy max_basins minima.
+        If not None, keep only the *max_basins* deepest minima.
+    verbose : bool
+        Print detection summary.
+    core_fraction : float
+        Fraction of each basin (by energy ranking) kept as the basin core.
+    core_cut : float or None
+        Absolute energy cutoff above the basin minimum (overrides
+        *core_fraction* if provided).
 
     Returns
     -------
     BasinNetwork
+        Network with ``basins``, ``labels``, ``labels_full``, and
+        ``core_labels`` attributes populated.
     """
     xs, ys, U = sample_potential_grid(potential, xlim=xlim, ylim=ylim, nx=nx, ny=ny)
 

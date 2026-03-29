@@ -1,13 +1,39 @@
-"""Stochastic_Estimation.fpe
+"""stochkin.fpe
+=============
 
-Fokker–Planck solvers and grid-based kinetic operators.
+Fokker–Planck equation (FPE) solvers and grid-based kinetic operators.
 
-This module supports:
-- 2D forward Smoluchowski / Fokker–Planck integration (FiPy preferred, NumPy fallback).
-- A detailed-balance-preserving discrete FP generator on a (xs, ys) grid.
-- 1D forward FPE integration on a free-energy profile F(s) with D(s) (FiPy).
-- Backward-equation FiPy utilities for committors and MFPT/exit times.
-- A multi-basin CTMC generator estimation using backward FiPy solves.
+This module provides numerical tools for forward and backward
+Smoluchowski / Fokker–Planck equations on free-energy surfaces:
+
+**Forward FPE (probability evolution)**
+
+- :func:`solve_fp_steady_state` – 2D time-stepping toward the steady-state
+  density using FiPy (preferred) or an explicit NumPy fallback.
+- :func:`solve_fp_1d_from_fes` – 1D time-stepping on a free-energy
+  profile :math:`F(s)` with position-dependent diffusion :math:`D(s)`.
+
+**Discrete Fokker–Planck generator**
+
+- :func:`build_fp_generator_from_fes` – build a detailed-balance-preserving
+  rate matrix :math:`L` on a 2D grid (SciPy sparse or dense).
+
+**Backward BVP solvers (1D, pure NumPy)**
+
+- :func:`solve_committor_1d_from_fes` – committor :math:`q(s)` from a
+  tridiagonal backward equation.
+- :func:`solve_exit_time_1d_from_fes` – mean exit time :math:`\\tau(s)`.
+- :func:`compute_ctmc_generator_fpe_1d` – multi-basin CTMC generator
+  from backward 1D solves.
+- :func:`mfpt_1d_smolu_integral` – analytic Smoluchowski integral for
+  :math:`\\tau_{i \\to j}`.
+
+**Backward BVP solvers (2D, FiPy)**
+
+- :func:`solve_committor_fipy` – 2D committor on a FiPy mesh.
+- :func:`solve_exit_time_fipy` – 2D mean exit time.
+- :func:`compute_ctmc_generator_fpe_fipy` – multi-basin CTMC generator
+  from backward 2D FiPy solves.
 """
 
 from __future__ import annotations
@@ -313,18 +339,52 @@ def solve_fp_steady_state(
 ):
     """Solve the 2D forward Fokker–Planck equation toward steady state.
 
-    Overdamped Langevin dynamics:
+    Evolves the probability density :math:`p(x,y,t)` of the overdamped
+    Langevin equation
 
-        dX_t = -D * beta * ∇U(X_t) dt + sqrt(2D) dW_t
+    .. math::
 
-    Forward FPE in divergence form:
+       dX_t = -D\\beta\\,\\nabla U(X_t)\\,dt + \\sqrt{2D}\\,dW_t
 
-        ∂_t p = ∇·( D ∇p + D beta p ∇U )
+    via the forward FPE in divergence form:
 
-    Notes
-    -----
-    - With FiPy, boundaries are no-flux by default if no constraints are applied.
-    - We optionally normalize p at each step to suppress numerical drift.
+    .. math::
+
+       \\partial_t p = \\nabla\\cdot(D\\nabla p + D\\beta\\, p\\,\\nabla U)
+
+    Uses FiPy (implicit, preferred) when available; otherwise falls back
+    to an explicit NumPy FTCS scheme.
+
+    Parameters
+    ----------
+    potential : callable
+        ``potential([x, y]) -> (U, F)`` with ``F = -\\nabla U``.
+    xlim, ylim : (float, float)
+        Domain bounds.
+    nx, ny : int
+        Grid points per axis.
+    D : float
+        Diffusion coefficient (constant).
+    beta : float
+        Inverse temperature.
+    dt : float
+        Time step.
+    n_steps : int
+        Number of integration steps.
+    initial : {'uniform'} or callable
+        Initial distribution.
+    normalize_each_step : bool
+        Re-normalise :math:`p` at every step.
+    viewer : bool
+        Use FiPy’s live viewer (FiPy only).
+    plot_final : bool
+        Plot the final density.
+
+    Returns
+    -------
+    dict
+        Keys: ``'p_grid'``, ``'xs'``, ``'ys'``, ``'U_grid'``,
+        ``'Ux'``, ``'Uy'``.
     """
 
     if not _HAVE_FIPY:
@@ -478,7 +538,7 @@ def solve_fp_steady_state(
 # -------------------------------------------------------------------------
 
 def build_fp_generator_from_fes(xs, ys, U_grid, D, beta, sparse=True):
-    """Build a detailed-balance-preserving discrete FP generator on a regular grid.
+    r"""Build a detailed-balance-preserving discrete FP generator on a regular grid.
 
     Parameters
     ----------
@@ -502,11 +562,13 @@ def build_fp_generator_from_fes(xs, ys, U_grid, D, beta, sparse=True):
     -----
     A common symmetric ("square-root") discretization is used:
 
-        k_{i→j} = D_face / Δ^2 * exp[-β (U_j - U_i)/2]
+    .. math::
 
-    so that for constant D the stationary distribution satisfies
-        π_i ∝ exp(-β U_i)
-    up to discretization error.
+        k_{i \to j} = \frac{D_{\text{face}}}{\Delta^2}
+        \exp\!\bigl[-\tfrac{\beta}{2}(U_j - U_i)\bigr]
+
+    so that for constant *D* the stationary distribution satisfies
+    :math:`\pi_i \propto \exp(-\beta U_i)` up to discretization error.
     """
 
     xs = np.asarray(xs, dtype=float)
@@ -638,13 +700,47 @@ def solve_fp_1d_from_fes(
     normalize_each_step=True,
     viewer=False,
 ):
-    """1D Fokker–Planck solver on a free-energy profile F(s) with D(s).
+    """1D forward Fokker–Planck solver on a free-energy profile.
 
     Solves
 
-        ∂_t p(s,t) = ∂_s [ D(s) ( ∂_s p + β p F'(s) ) ]
+    .. math::
 
-    with reflecting (no-flux) boundaries by default.
+       \\partial_t p(s,t) = \\partial_s\\bigl[D(s)\\bigl(
+       \\partial_s p + \\beta\\, p\\, F'(s)\\bigr)\\bigr]
+
+    with reflecting (no-flux) boundaries via FiPy.
+
+    Parameters
+    ----------
+    s : array_like
+        Uniform 1D grid.
+    F : array_like
+        Free-energy values on *s*.
+    D : array_like
+        Diffusion coefficient on *s*.
+    beta : float
+        Inverse temperature.
+    dt : float
+        Time step.
+    n_steps : int
+        Number of integration steps.
+    initial : {'uniform', 'boltzmann'} or array_like
+        Initial distribution.
+    normalize_each_step : bool
+        Re-normalise at every step.
+    viewer : bool
+        Use FiPy’s live viewer.
+
+    Returns
+    -------
+    dict
+        Keys: ``'s'``, ``'p'``, ``'F'``, ``'D'``, ``'dF_ds'``.
+
+    Raises
+    ------
+    ImportError
+        If FiPy is not installed.
     """
 
     s = np.asarray(s, dtype=float)
@@ -745,7 +841,37 @@ def solve_fp_1d_from_fes(
 
 
 def mfpt_1d_smolu_integral(s, F, D, beta, i_index, j_index):
-    """Mean first passage time τ_{i→j} using the 1D Smoluchowski integral formula."""
+    """Analytic Smoluchowski integral for the 1D MFPT :math:`\\tau_{i\\to j}`.
+
+    Uses the classical formula
+
+    .. math::
+
+       \\tau_{i\\to j}
+         = \\int_{s_i}^{s_j}
+             \\frac{e^{\\beta F(z)}}{D(z)}
+             \\int_{s_{\\min}}^{z} e^{-\\beta F(y)}\\,dy\\;dz
+
+    evaluated via the trapezoidal rule.
+
+    Parameters
+    ----------
+    s : array_like
+        1D grid (must be sorted).
+    F : array_like
+        Free-energy values on *s*.
+    D : array_like
+        Diffusion coefficient on *s*.
+    beta : float
+        Inverse temperature.
+    i_index, j_index : int
+        Grid indices of source and target.
+
+    Returns
+    -------
+    float
+        Mean first-passage time :math:`\\tau_{i\\to j}`.
+    """
 
     s = np.asarray(s, dtype=float)
     F = np.asarray(F, dtype=float)
@@ -1449,7 +1575,36 @@ def solve_committor_fipy(
     max_sweeps=2000,
     verbose=False,
 ):
-    """Solve div(A grad q) = 0 with internal Dirichlet sets q=1 and q=0."""
+    """Solve the 2D committor BVP on a FiPy mesh.
+
+    Solves :math:`\\nabla\\cdot(A\\,\\nabla q) = 0` with internal
+    Dirichlet constraints :math:`q=1` (*mask_q1*) and :math:`q=0`
+    (*mask_q0*), enforced via large penalty terms.
+
+    Parameters
+    ----------
+    mesh : FiPy mesh
+        2D mesh.
+    A_face : FiPy FaceVariable
+        Backward coefficient :math:`A = D\\,e^{-\\beta U}` on faces.
+    mask_q1, mask_q0 : array_like of bool
+        Cell masks for the two Dirichlet sets.
+    large_value : float or None
+        Penalty magnitude (auto-scaled if ``None``).
+    enforce_reflecting : bool
+        Impose no-flux on exterior faces.
+    solver, sweep_tol, max_sweeps : optional
+        FiPy solver parameters.
+    verbose : bool
+        Print diagnostics.
+
+    Returns
+    -------
+    q : CellVariable
+        Committor field.
+    info : dict
+        ``{'residual', 'n_sweeps'}``.
+    """
 
     if not _HAVE_FIPY:
         raise ImportError("FiPy is required for FiPy-based kinetics solvers")
@@ -1497,7 +1652,37 @@ def solve_exit_time_fipy(
     max_sweeps=4000,
     verbose=False,
 ):
-    """Solve div(A grad tau) = -w with tau=0 on absorbing cells."""
+    """Solve the 2D mean exit-time BVP on a FiPy mesh.
+
+    Solves :math:`\\nabla\\cdot(A\\,\\nabla\\tau) = -w` with
+    :math:`\\tau=0` on absorbing cells, enforced via penalty.
+
+    Parameters
+    ----------
+    mesh : FiPy mesh
+        2D mesh.
+    A_face : FiPy FaceVariable
+        Backward coefficient on faces.
+    w_var : CellVariable
+        Boltzmann weight :math:`w = e^{-\\beta(U-U_{\\min})}`.
+    mask_absorb : array_like of bool
+        Absorbing cell mask.
+    large_value : float or None
+        Penalty magnitude.
+    enforce_reflecting : bool
+        Impose no-flux on exterior faces.
+    solver, sweep_tol, max_sweeps : optional
+        FiPy solver parameters.
+    verbose : bool
+        Print diagnostics.
+
+    Returns
+    -------
+    tau : CellVariable
+        Mean exit-time field.
+    info : dict
+        ``{'residual', 'n_sweeps'}``.
+    """
 
     if not _HAVE_FIPY:
         raise ImportError("FiPy is required for FiPy-based kinetics solvers")
@@ -1569,16 +1754,17 @@ def compute_ctmc_generator_fpe_fipy(
     sweep_tol=1e-10,
     verbose=True,
 ):
-    """Compute a CTMC generator between basins using backward FPE FiPy solves.
+    r"""Compute a CTMC generator between basins using backward FPE FiPy solves.
 
-    For each basin i:
-      1) Solve exit time tau_i to the union of other basins (absorbing).
-         k_out(i) = 1 / <tau_i> (average over basin i).
-      2) For each j != i, solve committor q_{ij} with:
-            q=1 on basin j
-            q=0 on all basins k != i,j
-         p_{ij} = <q_{ij}> averaged over basin i.
-      3) Set K_{ij} = k_out(i) * p_{ij}, and K_{ii} = -sum_{j!=i} K_{ij}.
+    For each basin *i*:
+
+    1. Solve exit time :math:`\tau_i` to the union of other basins (absorbing).
+       :math:`k_{\text{out}}(i) = 1 / \langle\tau_i\rangle` (average over basin *i*).
+    2. For each :math:`j \neq i`, solve committor :math:`q_{ij}` with
+       :math:`q=1` on basin *j* and :math:`q=0` on all other basins.
+       :math:`p_{ij} = \langle q_{ij}\rangle` averaged over basin *i*.
+    3. Set :math:`K_{ij} = k_{\text{out}}(i)\, p_{ij}` and
+       :math:`K_{ii} = -\sum_{j \neq i} K_{ij}`.
 
     Returns
     -------

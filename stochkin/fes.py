@@ -1,3 +1,35 @@
+"""stochkin.fes
+=============
+
+Free-energy surface (FES) loading, interpolation, and plotting.
+
+This module provides tools for working with free-energy surfaces
+obtained from enhanced-sampling simulations (e.g. PLUMED metadynamics
+or umbrella sampling).
+
+**Loading**
+
+- :func:`load_plumed_fes_2d` / :func:`load_plumed_fes_1d` – read
+  PLUMED-style ``.dat`` files into NumPy arrays.
+- :func:`load_plumed_scalar_field_2d` /
+  :func:`load_diffusion_scalar_2d_from_plumed` – generic scalar-field
+  loaders (e.g. position-dependent diffusion).
+
+**Interpolating potential objects**
+
+- :class:`FESPotential` – picklable 2D interpolating potential
+  ``potential(x) -> (U, F)`` from a regular grid.  Supports spline
+  (SciPy ``RectBivariateSpline``) and bilinear (pure NumPy) modes.
+- :class:`FESPotential1D` – 1D analogue using ``numpy.interp`` +
+  finite-difference forces.
+- :func:`make_fes_potential_from_grid` /
+  :func:`make_fes_potential_from_plumed` – convenience constructors.
+
+**Plotting**
+
+- :func:`plot_fes_colormap` – filled-contour colormap of a 2D FES.
+"""
+
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -22,12 +54,29 @@ def load_plumed_fes_2d(
     subtract_min=True,
     verbose=True,
 ):
-    """
-    Load a 2D free energy surface from a PLUMED-style .dat file.
+    """Load a 2D free-energy surface from a PLUMED-style ``.dat`` file.
 
-    Assumes the file has at least 3 numeric columns:
-        x, y, F(x,y)
-    and that lines starting with '#' are comments.
+    The file is expected to have at least three numeric columns
+    (``x``, ``y``, ``F(x,y)``) with ``#``-comment lines.
+
+    Parameters
+    ----------
+    filename : str
+        Path to the text file.
+    x_col, y_col, fes_col : int
+        Zero-based column indices.
+    subtract_min : bool
+        If ``True``, shift so that :math:`\\min F = 0`.
+    verbose : bool
+        Print grid dimensions.
+
+    Returns
+    -------
+    x_grid, y_grid : ndarray
+        Sorted 1D coordinate arrays.
+    fes_grid : ndarray, shape (nx, ny)
+        Free-energy values on the regular grid (may contain NaN for
+        incomplete grids).
     """
     data = np.loadtxt(filename, comments="#")
 
@@ -167,17 +216,30 @@ def load_plumed_fes_1d(
     subtract_min=True,
     verbose=True,
 ):
-    """
-    Load a 1D free energy surface from a PLUMED-style .dat file.
+    """Load a 1D free energy surface from a PLUMED-style .dat file.
 
-    Assumes at least 2 numeric columns:
-        x, F(x)
-    and that lines starting with '#' are comments.
+    Assumes at least two numeric columns (``x``, ``F(x)``) and that
+    lines starting with ``'#'`` are comments.
+
+    Parameters
+    ----------
+    filename : str or path-like
+        Path to the PLUMED ``.dat`` file.
+    x_col : int
+        Column index for the coordinate (default 0).
+    fes_col : int
+        Column index for the free energy (default 1).
+    subtract_min : bool
+        If True, shift so the global minimum is zero.
+    verbose : bool
+        Print a summary after loading.
 
     Returns
     -------
-    x_grid : 1D array (sorted)
-    fes_grid : 1D array (same shape as x_grid)
+    x_grid : ndarray, shape (n,)
+        Sorted coordinate values.
+    fes_grid : ndarray, shape (n,)
+        Corresponding free-energy values.
     """
     data = np.loadtxt(filename, comments="#")
     if data.ndim == 1:
@@ -204,12 +266,47 @@ def load_plumed_fes_1d(
 
 
 class FESPotential:
-    """
-    Picklable 2D FES potential:
-        U(x) from a grid + interpolation, and F = -∇U.
+    """Picklable 2D free-energy-surface potential.
 
-    method = 'spline'  -> RectBivariateSpline (high accuracy, needs SciPy)
-    method = 'bilinear'-> pure NumPy bilinear interpolation + precomputed gradients
+    Given a regular ``(x_grid, y_grid, fes_grid)`` mesh, this class
+    builds an interpolating potential callable::
+
+        U, F = potential(np.array([x, y]))
+
+    where ``F = −∇U`` is the 2D force vector.
+
+    Two interpolation back-ends are supported:
+
+    * **``'spline'``** – ``scipy.interpolate.RectBivariateSpline``
+      (high accuracy, requires SciPy).
+    * **``'bilinear'``** – pure-NumPy bilinear interpolation with
+      pre-computed gradient grids (faster for large grids, no SciPy
+      needed).
+    * **``'auto'``** (default) – selects spline for small grids and
+      bilinear for grids with ≥ *auto_bilinear_npoints* points.
+
+    The object is designed to be **picklable** for multiprocessing:
+    the SciPy spline is dropped during pickle and rebuilt on unpickle.
+
+    Parameters
+    ----------
+    x_grid, y_grid : array_like
+        Sorted 1D coordinate arrays.
+    fes_grid : array_like, shape (len(x_grid), len(y_grid))
+        Free-energy values on the regular mesh.
+    method : {'spline', 'bilinear', 'auto'}
+        Interpolation back-end.
+    kx, ky : int
+        Spline degrees (default 3).
+    s : float
+        Spline smoothing factor (default 0).
+    extrapolate : bool
+        If ``False`` (default), positions outside the grid are
+        clamped.
+    auto_bilinear_npoints : int
+        Grid-size threshold for the ``'auto'`` selector.
+    uniform_tol : float
+        Tolerance for detecting uniform grid spacing.
     """
 
     def __init__(
@@ -513,9 +610,19 @@ class FESPotential:
     # --- main callable ---
 
     def __call__(self, position):
-        """
-        position: array-like [x, y]
-        returns: (U, F) with F = -∇U
+        """Evaluate the potential at a 2D point.
+
+        Parameters
+        ----------
+        position : array_like, shape (2,)
+            ``[x, y]`` coordinate.
+
+        Returns
+        -------
+        U : float
+            Free energy.
+        F : ndarray, shape (2,)
+            Force vector :math:`F = -\nabla U`.
         """
         pos = np.asarray(position, dtype=float)
         if pos.shape != (2,):
@@ -602,12 +709,21 @@ class FESPotential:
 
 
 class FESPotential1D:
-    """
-    1D analogue of FESPotential:
-        U(x) from a 1D grid, and F = -dU/dx via finite differences.
+    """Picklable 1D free-energy-surface potential.
 
-    Compatible with the BAOAB integrator:
-        __call__(position) -> (U, F) with F.shape == (1,)
+    Interpolates ``U(x)`` via ``numpy.interp`` and computes the force
+    :math:`F = -dU/dx` via a symmetric finite-difference stencil.
+
+    The callable interface is compatible with the BAOAB integrator::
+
+        U, F = potential(np.array([x]))   # F.shape == (1,)
+
+    Parameters
+    ----------
+    x_grid : array_like
+        Strictly increasing 1D coordinate array.
+    fes_grid : array_like
+        Free-energy values (same shape as *x_grid*).
     """
 
     def __init__(self, x_grid, fes_grid):
@@ -650,9 +766,19 @@ class FESPotential1D:
         return np.array([-dUdx], dtype=float)
 
     def __call__(self, position):
-        """
-        position: scalar or array-like [x]
-        returns: (U, F) with F.shape == (1,)
+        """Evaluate the 1D potential.
+
+        Parameters
+        ----------
+        position : scalar or array_like
+            1D coordinate ``[x]``.
+
+        Returns
+        -------
+        U : float
+            Free energy.
+        F : ndarray, shape (1,)
+            Force :math:`F = -dU/dx`.
         """
         pos = np.asarray(position, dtype=float).ravel()
         if pos.size != 1:
@@ -688,8 +814,26 @@ def make_fes_potential_from_grid(
     s=0.0,
     extrapolate=False,
 ):
-    """
-    Build a picklable FES potential object from grid data.
+    """Build a picklable :class:`FESPotential` from grid arrays.
+
+    Parameters
+    ----------
+    x_grid, y_grid : array_like
+        1D coordinate arrays.
+    fes_grid : array_like, shape (nx, ny)
+        Free-energy values.
+    method : {'spline', 'bilinear', 'auto'}
+        Interpolation back-end.
+    kx, ky : int
+        Spline degrees.
+    s : float
+        Smoothing.
+    extrapolate : bool
+        Allow extrapolation outside the grid.
+
+    Returns
+    -------
+    FESPotential
     """
     return FESPotential(
         x_grid,
@@ -721,11 +865,42 @@ def make_fes_potential_from_plumed(
     plot_levels=50,
     cmap="viridis",
 ):
-    """
-    Build a FESPotential from a PLUMED FES .dat file.
+    """Build a :class:`FESPotential` directly from a PLUMED FES file.
 
-    If plot=True, it also plots the interpolated FES on a refined grid
-    (plot_nx × plot_ny), using the same interpolation method.
+    Combines :func:`load_plumed_fes_2d` and
+    :func:`make_fes_potential_from_grid` in a single call.
+    Optionally plots the interpolated FES on a refined grid.
+
+    Parameters
+    ----------
+    filename : str
+        Path to the PLUMED ``.dat`` file.
+    x_col, y_col, fes_col : int
+        Column indices.
+    subtract_min : bool
+        Shift FES minimum to zero.
+    method : str
+        Interpolation back-end.
+    kx, ky : int
+        Spline degrees.
+    s : float
+        Smoothing.
+    extrapolate : bool
+        Allow extrapolation.
+    verbose : bool
+        Print grid info.
+    plot : bool
+        Show a diagnostic colormap.
+    plot_nx, plot_ny : int
+        Refined grid size for plotting.
+    plot_levels : int
+        Contour levels.
+    cmap : str
+        Matplotlib colormap.
+
+    Returns
+    -------
+    FESPotential
     """
     x_grid, y_grid, fes_grid = load_plumed_fes_2d(
         filename,
@@ -776,10 +951,22 @@ def make_fes_potential_from_plumed_1d(
     subtract_min=True,
     verbose=True,
 ):
-    """
-    Build a FESPotential1D from a PLUMED FES .dat file.
+    """Build a :class:`FESPotential1D` from a PLUMED 1D FES file.
 
-    Useful when running 1D Langevin dynamics directly on a FES.
+    Parameters
+    ----------
+    filename : str
+        Path to the PLUMED ``.dat`` file.
+    x_col, fes_col : int
+        Column indices.
+    subtract_min : bool
+        Shift FES minimum to zero.
+    verbose : bool
+        Print grid info.
+
+    Returns
+    -------
+    FESPotential1D
     """
     x_grid, fes_grid = load_plumed_fes_1d(
         filename,
@@ -798,8 +985,20 @@ def plot_fes_colormap(
     cmap="viridis",
     title=None,
 ):
-    """
-    Plot a 2D colormap (contourf) of a FES on a regular grid.
+    """Plot a 2D FES as a filled-contour colormap.
+
+    Parameters
+    ----------
+    x_grid, y_grid : array_like
+        1D coordinate arrays.
+    fes_grid : array_like, shape (nx, ny)
+        Free-energy values (NaNs are masked).
+    levels : int
+        Number of contour levels.
+    cmap : str
+        Matplotlib colormap name.
+    title : str or None
+        Figure title.
     """
     X, Y = np.meshgrid(x_grid, y_grid, indexing="ij")
     Z = np.ma.masked_invalid(fes_grid)

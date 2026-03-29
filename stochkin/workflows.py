@@ -566,6 +566,7 @@ def run_mfep_ctmc(
     """Find the MFEP on a 2D FES and compute 1D CTMC kinetics along it.
 
     Workflow:
+
     1. Load the 2D PLUMED FES.
     2. Find the minimum free-energy path (MFEP) from *start* to *end* using
        a grid-Dijkstra seed followed by NEB refinement.
@@ -664,6 +665,7 @@ def run_multi_mfep_ctmc(
     """Detect all basins on a 2D FES and compute pairwise MFEP-based CTMC rates.
 
     Workflow:
+
     1. Load the 2D PLUMED FES and build an interpolated potential.
     2. Detect all basins on the 2D surface.
     3. For every pair of basins (i, j), compute the MFEP connecting their

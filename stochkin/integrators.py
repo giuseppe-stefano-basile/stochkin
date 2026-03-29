@@ -1,3 +1,53 @@
+r"""stochkin.integrators
+=====================
+
+Langevin dynamics integrators and overdamped Brownian dynamics steppers.
+
+This module provides the core time-stepping routines used throughout
+stochkin for trajectory-based analyses (MFPT, committors, replicas).
+
+Underdamped Langevin
+--------------------
+:func:`baobab_step` implements a single BAOAB splitting step
+(Leimkuhler & Matthews, 2013).  BAOAB is a symmetric Strang splitting
+of the Langevin equation into:
+
+* **B** – half velocity kick (``velocity_update``)
+* **A** – half position drift (``position_update``)
+* **O** – Ornstein–Uhlenbeck thermostat (``random_velocity_update``)
+* **A** – half position drift
+* **B** – half velocity kick
+
+:func:`baobab_2d` wraps the single step into a full trajectory loop
+with save-frequency control.
+
+Overdamped Brownian dynamics
+----------------------------
+:func:`overdamped_step_euler` performs a single Euler–Maruyama step
+consistent with the divergence-form Fokker–Planck equation:
+
+.. math::
+    \partial_t p = \nabla \cdot \bigl[ D(x)(\nabla p + \beta\, p\, \nabla U) \bigr]
+
+which yields the drift
+:math:`b(x) = \beta D(x) F(x) + \nabla D(x)` with
+:math:`F = -\nabla U`.
+
+:func:`overdamped_bd` wraps the step into a trajectory loop with
+burn-in, save-frequency, and optional bounding-box enforcement.
+
+Diffusion helpers
+-----------------
+:class:`GammaToDiffusion` converts a (possibly position-dependent)
+friction coefficient γ into a diffusion coefficient D = kT/γ.
+:func:`eval_diffusion_and_grad` dispatches scalar / callable / object
+forms of D(x) into a uniform (D, ∇D) interface.
+
+References
+----------
+B. Leimkuhler and C. Matthews, *Appl. Math. Res. Express* **2013**, 34 (2013).
+"""
+
 import numpy as np
 
 from .boundaries import apply_bounds as _apply_bounds
@@ -7,24 +57,106 @@ from .boundaries import apply_bounds as _apply_bounds
 # =============================================================================
 
 def velocity_update(v, F, dt, m=1.0):
-    """Half-kick (B) step."""
+    """Half-kick (**B** step) of the BAOAB splitting.
+
+    Parameters
+    ----------
+    v : ndarray
+        Current velocity.
+    F : ndarray
+        Force vector *F = −∇U*.
+    dt : float
+        Full time step (half-step is applied internally).
+    m : float
+        Particle mass (default 1).
+
+    Returns
+    -------
+    v_new : ndarray
+        Updated velocity after a half-kick.
+    """
     return v + (F / m) * (dt / 2.0)
 
 def position_update(x, v, dt):
-    """Half-drift (A) step."""
+    """Half-drift (**A** step) of the BAOAB splitting.
+
+    Parameters
+    ----------
+    x : ndarray
+        Current position.
+    v : ndarray
+        Current velocity.
+    dt : float
+        Full time step (half-step is applied internally).
+
+    Returns
+    -------
+    x_new : ndarray
+        Updated position after a half-drift.
+    """
     return x + v * (dt / 2.0)
 
 def random_velocity_update(v, gamma, kT, dt, m=1.0):
-    """Ornstein–Uhlenbeck (O) step."""
+    """Ornstein–Uhlenbeck thermostat (**O** step) of the BAOAB splitting.
+
+    Applies an exact integration of the Ornstein–Uhlenbeck process
+    over one full time step *dt*, generating the correct Gaussian noise
+    for the given friction γ and temperature kT.
+
+    Parameters
+    ----------
+    v : ndarray
+        Current velocity.
+    gamma : float
+        Friction coefficient.
+    kT : float
+        Thermal energy :math:`k_B T`.
+    dt : float
+        Time step.
+    m : float
+        Particle mass (default 1).
+
+    Returns
+    -------
+    v_new : ndarray
+        Thermostatted velocity.
+    """
     R = np.random.randn(len(v))
     c1 = np.exp(-gamma * dt)
     c2 = np.sqrt((1.0 - c1**2) * kT / m)
     return c1 * v + c2 * R
 
 def baobab_step(potential, x, v, dt, gamma, kT, m=1.0):
-    """
-    One BAOAB step. Shared by mfpt/committor to avoid inconsistent drifts.
-    potential(x)->(U,F) with F=-∇U.
+    """Perform one full BAOAB splitting step.
+
+    This is the core time-stepper shared by MFPT, committor, and replica
+    modules to ensure consistent dynamics across the library.
+
+    Parameters
+    ----------
+    potential : callable
+        ``potential(x) -> (U, F)`` with ``F = −∇U``.
+    x : ndarray
+        Current position.
+    v : ndarray
+        Current velocity.
+    dt : float
+        Integration time step.
+    gamma : float
+        Friction coefficient.
+    kT : float
+        Thermal energy :math:`k_B T`.
+    m : float
+        Particle mass (default 1).
+
+    Returns
+    -------
+    x_new : ndarray
+        Updated position.
+    v_new : ndarray
+        Updated velocity.
+    U : float
+        Potential energy at the new position.
     """
     U, F = potential(x)
     v = velocity_update(v, F, dt, m)
@@ -46,9 +178,42 @@ def baobab_2d(
     save_frequency=10,
     m=1.0,
 ):
-    """
-    BAOAB Langevin integrator (works in any dimension despite the name).
-    Returns times, positions, velocities, energies.
+    """Run a full BAOAB Langevin trajectory.
+
+    Despite the “2d” suffix (historical), this integrator works in any
+    number of dimensions.
+
+    Parameters
+    ----------
+    potential : callable
+        ``potential(x) -> (U, F)`` with ``F = −∇U``.
+    max_time : float
+        Total simulation time.
+    dt : float
+        Integration time step.
+    gamma : float
+        Friction coefficient.
+    kT : float
+        Thermal energy.
+    initial_position : array_like
+        Starting position.
+    initial_velocity : array_like
+        Starting velocity.
+    save_frequency : int
+        Save a snapshot every *save_frequency* steps (default 10).
+    m : float
+        Particle mass (default 1).
+
+    Returns
+    -------
+    times : ndarray
+        Time stamps of saved snapshots.
+    positions : ndarray, shape (n_saved, d)
+        Saved positions.
+    velocities : ndarray, shape (n_saved, d)
+        Saved velocities.
+    energies : ndarray
+        Total energy (kinetic + potential) at each saved snapshot.
     """
     x = np.array(initial_position, dtype=float).ravel()
     v = np.array(initial_velocity, dtype=float).ravel()
@@ -76,9 +241,24 @@ def baobab_2d(
 # =============================================================================
 
 class GammaToDiffusion:
-    """
-    Picklable adapter: D(x) = kT / gamma(x).
-    gamma may be scalar or callable (must be picklable for multiprocessing).
+    r"""Adapter converting a friction coefficient γ to a diffusion coefficient.
+
+    Computes :math:`D(x) = k_BT / \gamma(x)` where γ may be a scalar or
+    a callable ``γ(x)``.  The object is picklable, making it safe for use
+    with ``multiprocessing.Pool``.
+
+    Parameters
+    ----------
+    gamma : float or callable
+        Friction coefficient.  If callable, must accept a position vector
+        and return a positive scalar.
+    kT : float
+        Thermal energy :math:`k_B T`.
+
+    Examples
+    --------
+    >>> D = GammaToDiffusion(gamma=10.0, kT=0.05)
+    >>> D(np.array([0.0, 0.0]))  # returns 0.005
     """
     def __init__(self, gamma, kT):
         self.gamma = gamma
@@ -123,12 +303,36 @@ def finite_difference_grad_scalar(fun, x, eps=1e-6):
     return grad
 
 def eval_diffusion_and_grad(diffusion, x, eps=1e-6):
-    """
-    Evaluate scalar D(x) and ∇D(x).
-    diffusion can be:
-      - scalar
-      - callable D(x)
-      - object with __call__(x)->D and grad(x)->∇D (preferred)
+    """Evaluate scalar diffusion D(x) and its gradient ∇D(x).
+
+    Dispatches on the type of *diffusion*:
+
+    * **scalar** – returns ``(D, zeros)``.
+    * **callable with** ``.grad()`` method – uses analytic gradient.
+    * **plain callable** – uses central finite differences (step *eps*).
+
+    Parameters
+    ----------
+    diffusion : scalar, callable, or object
+        The diffusion coefficient.
+    x : ndarray
+        Position vector.
+    eps : float
+        Step size for numerical gradient (default 1e-6).
+
+    Returns
+    -------
+    D : float
+        Diffusion value at *x*.
+    grad_D : ndarray
+        Gradient ∇D at *x*, same shape as *x*.
+
+    Raises
+    ------
+    ValueError
+        If *D* is negative.
+    TypeError
+        If *diffusion* is not a recognised type.
     """
     x = _as_1d_array(x)
 
@@ -160,10 +364,35 @@ def eval_diffusion_and_grad(diffusion, x, eps=1e-6):
     raise TypeError("diffusion must be a scalar, callable, or object with .grad().")
 
 def overdamped_step_euler(potential, x, dt, beta, diffusion, eps=1e-6):
-    """
-    Euler–Maruyama step consistent with divergence-form FPE:
-      ∂_t p = ∇·[ D(x) ( ∇p + β p ∇U ) ]
-    => drift b(x) = β D(x) F(x) + ∇D(x), with F=-∇U.
+    r"""Single Euler–Maruyama step for overdamped Brownian dynamics.
+
+    The step is consistent with the divergence-form Fokker–Planck equation:
+
+    .. math::
+        \partial_t p = \nabla \cdot \bigl[ D(x)(\nabla p + \beta\, p\, \nabla U) \bigr]
+
+    which gives the drift :math:`b(x) = \beta D(x) F(x) + \nabla D(x)` and
+    noise amplitude :math:`\sqrt{2 D(x)\,\mathrm{d}t}`.
+
+    Parameters
+    ----------
+    potential : callable
+        ``potential(x) -> (U, F)`` with ``F = −∇U``.
+    x : ndarray
+        Current position.
+    dt : float
+        Time step.
+    beta : float
+        Inverse thermal energy :math:`1/(k_BT)`.
+    diffusion : scalar, callable, or object
+        Diffusion coefficient *D(x)*.  See :func:`eval_diffusion_and_grad`.
+    eps : float
+        Finite-difference step for ∇D when *diffusion* has no ``.grad()``.
+
+    Returns
+    -------
+    x_new : ndarray
+        Updated position.
     """
     x = _as_1d_array(x)
     _, F = potential(x)
@@ -190,11 +419,51 @@ def overdamped_bd(
     seed=None,
     eps=1e-6,
 ):
-    """
-    Overdamped trajectory generator.
-    Provide diffusion (preferred) OR gamma (then D=kT/gamma).
-    Returns (times, positions, velocities, energies) for API compatibility.
-    velocities are zeros; energies are U(x) only.
+    """Run a full overdamped (Smoluchowski) Brownian-dynamics trajectory.
+
+    Provide either *diffusion* (preferred) or *gamma* (then D = kT/γ).
+    Trajectories can optionally be confined inside a bounding box via
+    mirror-reflection or clipping.
+
+    Parameters
+    ----------
+    potential : callable
+        ``potential(x) -> (U, F)`` with ``F = −∇U``.
+    max_time : float
+        Total simulation time.
+    dt : float
+        Integration time step.
+    kT : float
+        Thermal energy :math:`k_B T`.
+    initial_position : array_like
+        Starting position.
+    diffusion : scalar, callable, or object, optional
+        Diffusion coefficient *D(x)*.  Mutually exclusive with *gamma*.
+    gamma : float or callable, optional
+        Friction coefficient.  Converted to *D = kT/γ* internally.
+    save_frequency : int
+        Save a snapshot every *save_frequency* steps.
+    burn_in_steps : int
+        Number of initial steps to discard before recording.
+    bounds : sequence of (lo, hi), optional
+        Rectangular bounding box per coordinate.
+    boundary : {'reflect', 'clip'}
+        How to enforce *bounds* (default ``'reflect'``).
+    seed : int, optional
+        Random-number seed for reproducibility.
+    eps : float
+        Finite-difference step for ∇D.
+
+    Returns
+    -------
+    times : ndarray
+        Time stamps of saved snapshots.
+    positions : ndarray, shape (n_saved, d)
+        Saved positions.
+    velocities : ndarray
+        Zeros (API-compatible with ``baobab_2d``).
+    energies : ndarray
+        Potential energy *U(x)* at each snapshot (no kinetic term).
     """
     beta = 1.0 / float(kT)
 
