@@ -5,6 +5,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.2.0] – 2026-03-29
+
+### Added
+- `stochkin.uncertainty` module with:
+  - `bootstrap_ctmc_1d()` — Monte Carlo bootstrap propagation of F(s)
+    and D(s) credible intervals through the full CTMC pipeline.
+  - `bootstrap_ctmc_with_hummer_D()` — convenience wrapper that reads
+    Hummer-pipeline CSV files directly.
+  - `UncertaintyResult` dataclass with `*_mean`, `*_std`, `*_ci_lo`,
+    `*_ci_hi` for every CTMC output (K, exit times, rates, branching).
+- Example `06_uncertainty.py` — two-scenario demonstration with
+  publication-quality figure output.
+- Sphinx API page `docs/api/uncertainty.rst`.
+
+### Fixed
+- `_build_core_labels` now uses the basin object's detected minimum
+  position (`basin.minimum`) instead of `np.argmin(F)` within the
+  basin.  Previously, for shallow basins on a barrier flank, the core
+  could be placed at the basin boundary (lowest absolute F) rather
+  than at the local dip, causing exit-time estimates to be off by
+  orders of magnitude.
+
+---
+
 ## [0.1.0] – 2026-03-27
 
 ### Added

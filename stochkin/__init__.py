@@ -32,7 +32,7 @@ plotting
     Generic plotting helpers (FES, MFPT matrices, basin networks, etc.).
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # --------------------------------------------------------------------
 # Analytic potentials & basin partitioning

@@ -6,6 +6,7 @@ API Reference
    :caption: Modules
 
    workflows
+   uncertainty
    potentials
    integrators
    fes

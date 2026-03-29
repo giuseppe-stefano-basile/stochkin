@@ -73,6 +73,34 @@ is the rate of transition from basin *i* to basin *j*, and the diagonal
 satisfies :math:`K_{ii} = -\sum_{j \neq i} K_{ij}` so that rows sum
 to zero.
 
+
+Uncertainty propagation
+^^^^^^^^^^^^^^^^^^^^^^^
+
+The :mod:`stochkin.uncertainty` module propagates credible intervals on
+*F(s)* and *D(s)* through the CTMC pipeline via Monte Carlo bootstrap.
+Each replicate perturbs the inputs (Gaussian for F, log-normal for D),
+re-runs the full BVP solver, and the resulting rates / exit times are
+collected into confidence intervals.
+
+.. code-block:: python
+
+   import stochkin as sk
+
+   res = sk.bootstrap_ctmc_1d(
+       s, F, D,
+       D_lo=D_lo_grid, D_hi=D_hi_grid,
+       n_bootstrap=200,
+       seed=42,
+       T=300.0,
+       time_unit="ps",
+   )
+   print(res.summary("ps"))
+   # Access: res.K_ps_ci_lo, res.K_ps_ci_hi, res.exit_mean_ci_lo, ...
+
+See :doc:`api/uncertainty` for the full API and ``examples/06_uncertainty.py``
+for a complete worked example.
+
 Dependencies
 ------------
 

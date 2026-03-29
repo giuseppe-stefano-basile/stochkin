@@ -126,6 +126,7 @@ mfpt = compute_bidirectional_mfpt(
 | `integrators` | `baobab_2d`, `overdamped_bd` |
 | `committor` | `committor_map_parallel`, `committor_map_fpe`, `committor_profile_1d` |
 | `replicas` | `run_replicas`, `run_replicas_1d` |
+| `uncertainty` | `bootstrap_ctmc_1d`, `bootstrap_ctmc_with_hummer_D`, `UncertaintyResult` |
 | `plotting` | `plot_basin_network`, `plot_mfpt_matrix`, `plot_fp_solution_vs_boltzmann` |
 
 ---

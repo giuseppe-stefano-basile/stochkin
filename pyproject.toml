@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stochkin"
-version = "0.1.0"
+version = "0.2.0"
 description = "Stochastic kinetics toolkit: Fokker-Planck/CTMC analysis on 1D and 2D free-energy surfaces"
 readme = "README.md"
 license = { file = "LICENSE" }
