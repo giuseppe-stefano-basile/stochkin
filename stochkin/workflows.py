@@ -621,6 +621,13 @@ def run_mfep_ctmc(
         neb_max_iter=neb_steps,
     )
 
+    # Report NEB convergence
+    if verbose and hasattr(path, "metadata") and "converged" in path.metadata:
+        md = path.metadata
+        conv_tag = "converged" if md["converged"] else "NOT converged"
+        print(f"[NEB] {conv_tag} after {md['n_iter']} iters "
+              f"(max_force={md['final_max_force']:.3e}, tol={md['tol']:.1e})")
+
     # 1D profile along arc-length – resample to uniform grid
     s_raw = path.s
     F_raw = path.F - np.nanmin(path.F)

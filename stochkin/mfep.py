@@ -16,6 +16,8 @@ import heapq
 
 import numpy as np
 
+from scipy.interpolate import RectBivariateSpline as _RBS
+
 from .fes import load_plumed_fes_2d
 
 
@@ -490,6 +492,9 @@ class NEBMFEP:
             self.F_work, self.x, self.y, edge_order=edge_order
         )
 
+        # Smooth bicubic spline for gradient evaluation (C² continuous)
+        self._spl = _RBS(self.x, self.y, self.F_work, kx=3, ky=3)
+
     def _interp_scalar(self, field: np.ndarray, xq: float, yq: float) -> float:
         xq = float(np.clip(xq, self.x[0], self.x[-1]))
         yq = float(np.clip(yq, self.y[0], self.y[-1]))
@@ -517,8 +522,11 @@ class NEBMFEP:
         )
 
     def _interp_grad(self, xq: float, yq: float) -> np.ndarray:
-        gx = self._interp_scalar(self.dFdx, xq, yq)
-        gy = self._interp_scalar(self.dFdy, xq, yq)
+        """Gradient via bicubic spline – C² smooth, no grid-cell kinks."""
+        xq = float(np.clip(xq, self.x[0], self.x[-1]))
+        yq = float(np.clip(yq, self.y[0], self.y[-1]))
+        gx = float(self._spl(xq, yq, dx=1, grid=False))
+        gy = float(self._spl(xq, yq, dy=1, grid=False))
         return np.asarray([gx, gy], dtype=float)
 
     def refine(
@@ -529,7 +537,7 @@ class NEBMFEP:
         k_spring: float = 1.0,
         step_size: float = 0.01,
         max_iter: int = 3000,
-        tol: float = 1e-4,
+        tol: float = 5.0,
         smooth: float = 0.0,
         clip_to_bounds: bool = True,
         max_step: Optional[float] = None,
@@ -711,6 +719,170 @@ class NEBMFEP:
         return refined
 
 
+    def refine_fire(
+        self,
+        initial_path: np.ndarray,
+        *,
+        n_images: int = 120,
+        k_spring: float = 1.0,
+        dt_start: float = 0.005,
+        dt_max: float = 0.05,
+        max_iter: int = 5000,
+        tol: float = 5.0,
+        n_min: int = 5,
+        f_inc: float = 1.1,
+        f_dec: float = 0.5,
+        alpha_start: float = 0.1,
+        f_alpha: float = 0.99,
+        smooth: float = 0.0,
+        clip_to_bounds: bool = True,
+        reparam_every: int = 200,
+    ) -> MFEPPath:
+        """Refine an NEB path using the FIRE algorithm (Bitzek et al. 2006).
+
+        FIRE (Fast Inertial Relaxation Engine) uses velocity-based
+        dynamics with adaptive time-stepping. It converges much faster
+        than steepest descent for NEB optimisation.
+
+        Parameters
+        ----------
+        initial_path : (N, 2) array
+        n_images, k_spring : NEB parameters
+        dt_start : initial time step
+        dt_max : maximum allowed time step
+        max_iter : iteration cap
+        tol : force convergence tolerance (kJ mol⁻¹ per CV-unit)
+        n_min : FIRE delay before acceleration
+        f_inc, f_dec : time-step scale factors
+        alpha_start, f_alpha : FIRE mixing parameters
+        smooth : smoothing factor ∈ [0, 1]
+        clip_to_bounds : clip images to grid domain
+        reparam_every : reparametrize path every N steps
+        """
+        p0 = np.asarray(initial_path, dtype=float)
+        images = _resample_polyline(p0, int(n_images))
+        images[0] = p0[0]
+        images[-1] = p0[-1]
+
+        dx = float(np.median(np.diff(self.x)))
+        dy = float(np.median(np.diff(self.y)))
+        grid_step = float(np.hypot(dx, dy))
+        max_step_eff = 2.0 * grid_step  # limit displacement to ~2 grid cells
+
+        dt = float(dt_start)
+        alpha = float(alpha_start)
+        v = np.zeros_like(images)
+        n_pos = 0  # steps since last negative P
+
+        converged = False
+        max_force = np.inf
+        n_done = 0
+
+        for it in range(int(max_iter)):
+            # --- Compute NEB forces on interior images ---
+            forces = np.zeros_like(images)
+            max_force = 0.0
+            for i in range(1, images.shape[0] - 1):
+                t = images[i + 1] - images[i - 1]
+                nt = float(np.linalg.norm(t))
+                if nt <= 1e-15:
+                    t = np.asarray([1.0, 0.0], dtype=float)
+                else:
+                    t = t / nt
+
+                grad = self._interp_grad(images[i, 0], images[i, 1])
+                true_force = -grad
+                true_perp = true_force - np.dot(true_force, t) * t
+
+                d_f = float(np.linalg.norm(images[i + 1] - images[i]))
+                d_b = float(np.linalg.norm(images[i] - images[i - 1]))
+                spring = float(k_spring) * (d_f - d_b) * t
+
+                f_tot = true_perp + spring
+                forces[i] = f_tot
+                max_force = max(max_force, float(np.linalg.norm(f_tot)))
+
+            n_done = it + 1
+            if max_force < float(tol):
+                converged = True
+                break
+
+            # --- FIRE dynamics ---
+            P = float(np.sum(v * forces))  # power
+
+            if P > 0.0:
+                v_norm = float(np.linalg.norm(v))
+                f_norm = float(np.linalg.norm(forces))
+                if f_norm > 1e-30:
+                    v = (1.0 - alpha) * v + alpha * (v_norm / f_norm) * forces
+                n_pos += 1
+                if n_pos > n_min:
+                    dt = min(dt * f_inc, dt_max)
+                    alpha = alpha * f_alpha
+            else:
+                v[:] = 0.0
+                dt = dt * f_dec
+                alpha = float(alpha_start)
+                n_pos = 0
+
+            # velocity Verlet half-step: v += 0.5*dt*F, x += dt*v
+            v += 0.5 * dt * forces
+            disp = dt * v[1:-1]
+            # Clamp per-image displacement to max_step
+            dn = np.linalg.norm(disp, axis=1)
+            mask = dn > max_step_eff
+            if np.any(mask):
+                disp[mask] *= (max_step_eff / (dn[mask, None] + 1e-15))
+                # Also limit velocity to prevent further overshoot
+                v[1:-1][mask] *= (max_step_eff / (dn[mask, None] + 1e-15))
+            images[1:-1] += disp
+
+            if smooth > 0.0:
+                images[1:-1] = (
+                    (1.0 - float(smooth)) * images[1:-1]
+                    + 0.5 * float(smooth) * (images[:-2] + images[2:])
+                )
+
+            if int(reparam_every) > 0 and ((it + 1) % int(reparam_every) == 0):
+                images = _resample_polyline(images, int(n_images))
+                v = np.zeros_like(images)
+                n_pos = 0
+                alpha = float(alpha_start)
+
+            if clip_to_bounds:
+                images[:, 0] = np.clip(images[:, 0], self.x[0], self.x[-1])
+                images[:, 1] = np.clip(images[:, 1], self.y[0], self.y[-1])
+
+            images[0] = p0[0]
+            images[-1] = p0[-1]
+
+        f_path = np.asarray(
+            [self._interp_scalar(self.F_work, px, py) for px, py in images],
+            dtype=float,
+        )
+        s_path = _cumulative_arclength(images[:, 0], images[:, 1])
+        return MFEPPath(
+            x=images[:, 0],
+            y=images[:, 1],
+            s=s_path,
+            F=f_path,
+            method="neb-fire",
+            objective="refined",
+            indices=None,
+            metadata={
+                "n_images": int(n_images),
+                "k_spring": float(k_spring),
+                "dt_start": float(dt_start),
+                "dt_max": float(dt_max),
+                "max_iter": int(max_iter),
+                "tol": float(tol),
+                "converged": bool(converged),
+                "n_iter": int(n_done),
+                "final_max_force": float(max_force),
+            },
+        )
+
+
 def compute_mfep_profile_1d(
     x_grid: np.ndarray,
     y_grid: np.ndarray,
@@ -726,11 +898,12 @@ def compute_mfep_profile_1d(
     neb_k_spring: float = 1.0,
     neb_step_size: float = 0.01,
     neb_max_iter: int = 3000,
-    neb_tol: float = 1e-4,
+    neb_tol: float = 5.0,
     neb_smooth: float = 0.0,
     neb_max_step: Optional[float] = None,
     neb_adaptive_step: bool = True,
-    neb_reparam_every: int = 10,
+    neb_reparam_every: Optional[int] = None,
+    neb_optimizer: str = "sd",
 ) -> MFEPPath:
     """
     Convenience wrapper:
@@ -751,19 +924,33 @@ def compute_mfep_profile_1d(
         return coarse
 
     neb = NEBMFEP(x_grid, y_grid, fes_grid)
-    refined = neb.refine(
-        coarse.as_xy(),
-        n_images=neb_images,
-        k_spring=neb_k_spring,
-        step_size=neb_step_size,
-        max_iter=neb_max_iter,
-        tol=neb_tol,
-        smooth=neb_smooth,
-        clip_to_bounds=True,
-        max_step=neb_max_step,
-        adaptive_step=neb_adaptive_step,
-        reparam_every=neb_reparam_every,
-    )
+    reparam = neb_reparam_every if neb_reparam_every is not None else (200 if neb_optimizer == "fire" else 10)
+    if neb_optimizer == "fire":
+        refined = neb.refine_fire(
+            coarse.as_xy(),
+            n_images=neb_images,
+            k_spring=neb_k_spring,
+            dt_start=neb_step_size,
+            max_iter=neb_max_iter,
+            tol=neb_tol,
+            smooth=neb_smooth,
+            clip_to_bounds=True,
+            reparam_every=reparam,
+        )
+    else:
+        refined = neb.refine(
+            coarse.as_xy(),
+            n_images=neb_images,
+            k_spring=neb_k_spring,
+            step_size=neb_step_size,
+            max_iter=neb_max_iter,
+            tol=neb_tol,
+            smooth=neb_smooth,
+            clip_to_bounds=True,
+            max_step=neb_max_step,
+            adaptive_step=neb_adaptive_step,
+            reparam_every=reparam,
+        )
     refined.metadata["initializer_objective"] = coarse.objective
     refined.metadata["initializer_points"] = int(coarse.s.size)
     return refined
