@@ -87,8 +87,17 @@ def _build_core_labels(
         if idx_b.size == 0:
             continue
 
-        # Locate the minimum inside the basin
-        i_min = int(idx_b[np.argmin(F[idx_b])])
+        # Locate the basin minimum — prefer the detected minimum position
+        # stored on the basin object (``b.minimum``), which corresponds to
+        # the local minimum found by the basin-detection algorithm.
+        # Falling back to argmin(F) would pick the *global* F-minimum
+        # inside the basin, which for shallow basins on a barrier flank
+        # can sit at the basin boundary rather than at the local dip.
+        basin_min_pos = getattr(b, "minimum", None)
+        if basin_min_pos is not None:
+            i_min = int(idx_b[np.argmin(np.abs(s[idx_b] - float(basin_min_pos)))])
+        else:
+            i_min = int(idx_b[np.argmin(F[idx_b])])
         mpos = float(s[i_min])
 
         # Sort basin points by distance to minimum; keep top fraction
