@@ -18,3 +18,10 @@ docs/_build/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local agent context
+AGENTS.md
+
+# Jupyter runtime artifacts
+.ipynb_checkpoints/
+notebooks/output/

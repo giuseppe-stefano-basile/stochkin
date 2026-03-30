@@ -37,6 +37,9 @@ pip install -e .
 # Optional: 2D FPE backend (FiPy)
 pip install -e ".[fipy]"
 
+# Optional: Jupyter notebooks for the bundled examples
+pip install -e ".[notebooks]"
+
 # Dev tools
 pip install -e ".[dev]"
 ```
@@ -109,6 +112,24 @@ mfpt = compute_bidirectional_mfpt(
     double_well_2d, basin_net.basins[0], basin_net.basins[1],
     kT=kT, gamma=gamma, n_replicas=200, max_time=1e5, dt=1e-3,
 )
+```
+
+## Example notebooks
+
+Notebook versions of the bundled examples live in `notebooks/`:
+
+- `00_generate_synthetic_data.ipynb`
+- `01_analytic_doublewell.ipynb`
+- `02_1d_plumed_fes_ctmc.ipynb`
+- `03_1d_hummer_D_ctmc.ipynb`
+- `04_mfep_ctmc.ipynb`
+- `05_pairwise_mfep_paths.ipynb`
+- `06_uncertainty.ipynb`
+
+They can be regenerated from the template builder with:
+
+```bash
+python tools/build_example_notebooks.py
 ```
 
 ---
