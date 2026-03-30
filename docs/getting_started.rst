@@ -11,14 +11,56 @@ From the repository root:
    pip install -e .
 
 This installs **stochkin** in editable mode with the core dependencies
-(NumPy, Matplotlib).  For the full feature set install the optional
-extras:
+(NumPy, SciPy, Matplotlib, tqdm, pandas). Optional extras are available
+for notebook usage, development tooling, and the FiPy-based 2-D Fokker–
+Planck backend:
 
 .. code-block:: bash
 
-   pip install -e ".[full]"
-   # or individually:
-   pip install scipy fipy tqdm pandas
+   pip install -e ".[notebooks]"   # Jupyter + ipykernel
+   pip install -e ".[dev]"         # pytest, black, ruff, pre-commit
+   pip install -e ".[fipy]"        # optional 2-D FPE backend
+
+If you only need notebooks without editable install extras, a minimal
+alternative is:
+
+.. code-block:: bash
+
+   pip install jupyter ipykernel
+
+Bundled examples and notebooks
+------------------------------
+
+The repository includes both script and notebook versions of the main
+worked examples:
+
+- ``examples/generate_synthetic_data.py`` plus
+  ``notebooks/00_generate_synthetic_data.ipynb``
+- ``examples/01_analytic_doublewell.py`` plus
+  ``notebooks/01_analytic_doublewell.ipynb``
+- ``examples/02_1d_plumed_fes_ctmc.py`` plus
+  ``notebooks/02_1d_plumed_fes_ctmc.ipynb``
+- ``examples/03_1d_hummer_D_ctmc.py`` plus
+  ``notebooks/03_1d_hummer_D_ctmc.ipynb``
+- ``examples/04_mfep_ctmc.py`` plus
+  ``notebooks/04_mfep_ctmc.ipynb``
+- ``examples/05_pairwise_mfep_paths.py`` plus
+  ``notebooks/05_pairwise_mfep_paths.ipynb``
+- ``examples/06_uncertainty.py`` plus
+  ``notebooks/06_uncertainty.ipynb``
+
+The notebooks are generated from the template builder:
+
+.. code-block:: bash
+
+   python tools/build_example_notebooks.py
+
+Most examples use the bundled synthetic datasets in ``examples/data/``.
+If you want to regenerate those files first, run:
+
+.. code-block:: bash
+
+   python examples/generate_synthetic_data.py --plot
 
 Minimal example
 ---------------
@@ -113,18 +155,21 @@ Dependencies
    * - NumPy
      - **yes**
      - arrays, linear algebra
+   * - SciPy
+     - **yes**
+     - interpolation, sparse/numerical utilities
    * - Matplotlib
      - **yes**
      - plotting
-   * - SciPy
-     - optional
-     - spline interpolation, sparse solvers
+   * - tqdm
+     - **yes**
+     - progress bars
+   * - pandas
+     - **yes**
+     - CSV loading in workflows
    * - FiPy
      - optional
      - 2-D Fokker–Planck PDE solves
-   * - tqdm
+   * - jupyter, ipykernel
      - optional
-     - progress bars
-   * - pandas
-     - optional
-     - CSV loading in workflows
+     - running the bundled example notebooks

@@ -19,6 +19,9 @@ Quick links
 * :doc:`getting_started` — installation, first example, key concepts.
 * :doc:`api/index` — full API reference (auto-generated from docstrings).
 
+The repository also ships runnable example scripts in ``examples/`` and
+matching Jupyter notebooks in ``notebooks/`` for the main workflows.
+
 .. toctree::
    :maxdepth: 2
    :caption: Contents
