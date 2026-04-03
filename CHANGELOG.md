@@ -52,5 +52,5 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-<!-- [unreleased]: https://github.com/giuseppe-invernizzi/stochkin/compare/v0.1.0...HEAD -->
-<!-- [0.1.0]: https://github.com/giuseppe-invernizzi/stochkin/releases/tag/v0.1.0 -->
+<!-- [unreleased]: https://github.com/giuseppe-stefano-basile/stochkin/compare/v0.1.0...HEAD -->
+<!-- [0.1.0]: https://github.com/giuseppe-stefano-basile/stochkin/releases/tag/v0.1.0 -->

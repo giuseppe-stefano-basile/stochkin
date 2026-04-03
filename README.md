@@ -30,7 +30,7 @@ continuous-time Markov chain (CTMC) kinetics via a Fokker–Planck
 
 ```bash
 # Editable install from source (recommended while in active development)
-git clone https://github.com/giuseppe-invernizzi/stochkin.git
+git clone https://github.com/giuseppe-stefano-basile/stochkin.git
 cd stochkin
 pip install -e .
 
@@ -44,7 +44,7 @@ pip install -e ".[notebooks]"
 pip install -e ".[dev]"
 ```
 
-**Dependencies**: `numpy`, `scipy`, `matplotlib`, `tqdm`, `pandas`
+**Dependencies**: `numpy`, `scipy`, `matplotlib`, `tqdm`
 (all listed in `pyproject.toml`).
 
 ---
