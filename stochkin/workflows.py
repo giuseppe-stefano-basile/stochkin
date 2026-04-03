@@ -24,10 +24,23 @@ basin_ids    Sorted array of integer basin ids
 """
 from __future__ import annotations
 
+import csv as _csv
 from pathlib import Path
 from typing import Optional, Sequence, Tuple, Union
 
 import numpy as np
+
+
+def _read_csv(path):
+    """Read a CSV file into ``{column: ndarray}`` (replaces pandas)."""
+    with open(path, newline="") as fh:
+        reader = _csv.reader(fh)
+        headers = [h.strip() for h in next(reader)]
+        cols = {h: [] for h in headers}
+        for row in reader:
+            for h, v in zip(headers, row):
+                cols[h].append(v)
+    return {h: np.asarray(v, dtype=float) for h, v in cols.items()}
 
 from itertools import combinations
 
@@ -509,7 +522,6 @@ def run_1d_ctmc_with_hummer_D(
     -------
     dict  (same keys as :func:`run_1d_ctmc`)
     """
-    import pandas as pd  # local import; pandas is an optional dep
     from .fes import load_plumed_fes_1d
 
     # Load FES
@@ -526,9 +538,9 @@ def run_1d_ctmc_with_hummer_D(
     F_grid = np.interp(s_grid, s, F)
 
     # Load D profile
-    df = pd.read_csv(d_csv)
-    x_D_raw = df[d_xcol].values.astype(float)
-    D_raw = df[d_col].values.astype(float)
+    df = _read_csv(d_csv)
+    x_D_raw = df[d_xcol]
+    D_raw = df[d_col]
 
     # Interface → center conversion
     if d_grid == "interface":

@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.abspath(".."))
 project = "stochkin"
 author = "Giuseppe Stefano Basile"
 copyright = "2024–2026, Giuseppe Stefano Basile"
-release = "0.1.0"
+release = "0.2.0"
 
 # -- General configuration ---------------------------------------------------
 extensions = [

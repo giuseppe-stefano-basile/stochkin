@@ -38,7 +38,6 @@ dependencies = [
     "scipy>=1.7",
     "matplotlib>=3.4",
     "tqdm",
-    "pandas",
 ]
 
 [project.optional-dependencies]

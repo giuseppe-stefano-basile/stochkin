@@ -636,7 +636,6 @@ def bootstrap_ctmc_with_hummer_D(
     -------
     UncertaintyResult
     """
-    import pandas as pd  # type: ignore
     from .fes import load_plumed_fes_1d
 
     if confidence is None:
@@ -655,9 +654,9 @@ def bootstrap_ctmc_with_hummer_D(
     F_grid = np.interp(s_grid, s_raw, F_raw)
 
     # ---- Load D profile ----
-    df = pd.read_csv(d_csv)
-    x_D_raw = df[d_xcol].values.astype(float)
-    D_raw = df[d_col].values.astype(float)
+    df = _read_csv(d_csv)
+    x_D_raw = df[d_xcol]
+    D_raw = df[d_col]
 
     if d_grid == "interface":
         x_D_src, D_src, _ = interface_to_centers(
@@ -678,9 +677,9 @@ def bootstrap_ctmc_with_hummer_D(
     # ---- Resolve D uncertainty ----
     D_lo_grid = None
     D_hi_grid = None
-    if perturb_D and D_lo_col in df.columns and D_hi_col in df.columns:
-        D_lo_raw = df[D_lo_col].values.astype(float)
-        D_hi_raw = df[D_hi_col].values.astype(float)
+    if perturb_D and D_lo_col in df and D_hi_col in df:
+        D_lo_raw = df[D_lo_col]
+        D_hi_raw = df[D_hi_col]
         if d_grid == "interface":
             _, D_lo_src, _ = interface_to_centers(
                 x_D_raw, D_lo_raw, method=d_interface_mode
@@ -709,10 +708,10 @@ def bootstrap_ctmc_with_hummer_D(
                 np.asarray(F_err, dtype=float), s_grid.size
             ).copy()
         elif fes_err_path is not None:
-            df_f = pd.read_csv(fes_err_path)
-            x_f = df_f.iloc[:, 0].values.astype(float)  # first col = CV
-            fl = df_f[F_lo_col].values.astype(float)
-            fh = df_f[F_hi_col].values.astype(float)
+            df_f = _read_csv(fes_err_path)
+            x_f = next(iter(df_f.values()))  # first col = CV
+            fl = df_f[F_lo_col]
+            fh = df_f[F_hi_col]
             sigma_f_raw = _ci_to_sigma(fl, fh, ci_level=ci_level)
             F_sigma_grid = np.interp(s_grid, x_f, sigma_f_raw)
 
