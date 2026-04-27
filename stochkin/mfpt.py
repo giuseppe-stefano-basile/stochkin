@@ -36,6 +36,7 @@ basins on a free-energy landscape:
 
 import numpy as np
 import matplotlib.pyplot as plt
+import os
 from multiprocessing import Pool
 import multiprocessing as mp
 import warnings
@@ -59,6 +60,7 @@ from .fpe import build_fp_generator_from_fes
 
 from .integrators import baobab_step, overdamped_step_euler, GammaToDiffusion
 from .boundaries import apply_bounds as _apply_bounds, reflect_position_velocity as _reflect_xv
+from .fast_langevin import FastLangevinUnsupported, compute_mfpt_network_fast_1d
 
 
 def _km_restricted_mean(event_times, n_total, t_max):
@@ -1198,6 +1200,7 @@ def compute_mfpt_network(
     seed: int | None = None,
     batch_size: int | None = None,
     mp_start_method: str | None = None,
+    engine: str = "auto",
     **legacy_kwargs,
 ):
     """Estimate a multi-basin MFPT network via overdamped BD first-exit simulations.
@@ -1238,6 +1241,12 @@ def compute_mfpt_network(
         overhead.
     mp_start_method : str or None
         Force multiprocessing context (e.g. ``'fork'``, ``'spawn'``).
+    engine : {'auto', 'python', 'fast', 'fast_1d'}, optional
+        ``'auto'`` uses the compiled 1D overdamped first-exit backend when
+        the potential, basin network, diffusion, and bounds are eligible;
+        otherwise it falls back to the existing Python implementation.
+        ``'python'`` always uses the legacy implementation. ``'fast'`` and
+        ``'fast_1d'`` require the compiled backend and raise if unsupported.
 
     Returns
     -------
@@ -1343,6 +1352,15 @@ def compute_mfpt_network(
             f"compute_mfpt_network() got unexpected keyword argument(s): {bad}"
         )
 
+    engine_requested = str(engine or "auto").strip().lower()
+    if engine_requested in ("legacy", "slow"):
+        engine_requested = "python"
+    if engine_requested in ("compiled", "compiled_1d"):
+        engine_requested = "fast"
+    valid_engines = {"auto", "python", "fast", "fast_1d"}
+    if engine_requested not in valid_engines:
+        raise ValueError("engine must be one of 'auto', 'python', 'fast', or 'fast_1d'.")
+
     if D is None:
         D = 1.0
     if beta is None:
@@ -1390,6 +1408,31 @@ def compute_mfpt_network(
     # processes, extra workers just add start-up and IPC overhead.
     n_tasks_total = n_basins * int(np.ceil(trials_per_basin / batch_size))
     n_procs = min(n_procs, max(1, n_tasks_total))
+
+    fast_fallback_reason = None
+    if engine_requested != "python":
+        try:
+            return compute_mfpt_network_fast_1d(
+                potential=potential,
+                basin_network=basin_network,
+                dt=float(dt),
+                max_time=float(max_time),
+                D=D,
+                beta=float(beta),
+                bounds=bounds,
+                boundary=boundary,
+                trials_per_basin=int(trials_per_basin),
+                n_threads=int(n_procs),
+                seed=seed,
+                batch_size=int(batch_size),
+                engine_requested=engine_requested,
+            )
+        except FastLangevinUnsupported as exc:
+            fast_fallback_reason = str(exc)
+            if engine_requested in ("fast", "fast_1d"):
+                raise RuntimeError(
+                    f"fast Langevin engine requested but unavailable: {fast_fallback_reason}"
+                ) from exc
 
     def _accumulate_triplet(start_id, dest_id, t):
         if dest_id is None:
@@ -1502,6 +1545,9 @@ def compute_mfpt_network(
             batch_size=int(batch_size),
             mp_start_method=str(mp_start_method),
             seed=seed,
+            engine_requested=engine_requested,
+            engine_used="python",
+            fast_fallback_reason=fast_fallback_reason,
         ),
         "method": "traj_first_exit",
     }

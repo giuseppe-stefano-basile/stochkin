@@ -160,6 +160,8 @@ from .mfpt import (
     compute_mfpt_network_fpe,
 )
 
+from .fast_langevin import fast_langevin1d_backend_available
+
 # --------------------------------------------------------------------
 # Plotting helpers
 # --------------------------------------------------------------------
@@ -241,6 +243,7 @@ __all__ = [
     "compute_mfpt_network",
     "estimate_rate_matrix",
     "compute_mfpt_network_fpe",
+    "fast_langevin1d_backend_available",
     # Plotting
     "plot_results",
     "plot_mfpt_matrix",
