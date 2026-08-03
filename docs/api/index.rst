@@ -7,6 +7,7 @@ API Reference
 
    workflows
    uncertainty
+   memory
    potentials
    integrators
    fes

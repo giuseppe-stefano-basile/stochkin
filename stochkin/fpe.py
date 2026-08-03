@@ -17,6 +17,8 @@ Smoluchowski / Fokker–Planck equations on free-energy surfaces:
 
 - :func:`build_fp_generator_from_fes` – build a detailed-balance-preserving
   rate matrix :math:`L` on a 2D grid (SciPy sparse or dense).
+- :func:`build_smolu_generator_1d` – build the corresponding nearest-neighbour
+  Smoluchowski generator on a 1D free-energy grid.
 
 **Backward BVP solvers (1D, pure NumPy)**
 
@@ -37,6 +39,8 @@ Smoluchowski / Fokker–Planck equations on free-energy surfaces:
 """
 
 from __future__ import annotations
+
+import warnings
 
 import numpy as np
 
@@ -967,6 +971,338 @@ def _as_1d_array(x, n: int, name: str) -> np.ndarray:
     if x.size != n:
         raise ValueError(f"{name} must be scalar or have length {n}")
     return x
+
+
+def _as_1d_face_array(x, n: int, name: str) -> np.ndarray:
+    """Return face-centered values of length n-1 from scalar/cell/face input."""
+
+    arr = np.asarray(x, dtype=float).ravel()
+    if arr.size == 1:
+        value = float(arr[0])
+        if not np.isfinite(value) or value <= 0.0:
+            raise ValueError(f"{name} must be strictly positive")
+        return np.full(n - 1, value, dtype=float)
+    if arr.size == n:
+        if not np.all(np.isfinite(arr)) or np.any(arr <= 0.0):
+            raise ValueError(f"{name} must be strictly positive and finite")
+        return 0.5 * (arr[:-1] + arr[1:])
+    if arr.size == n - 1:
+        if not np.all(np.isfinite(arr)) or np.any(arr <= 0.0):
+            raise ValueError(f"{name} must be strictly positive and finite")
+        return arr.astype(float, copy=True)
+    raise ValueError(f"{name} must be scalar, length {n}, or face-centered length {n - 1}")
+
+
+def build_smolu_generator_1d(
+    s,
+    F,
+    D,
+    beta=1.0,
+    *,
+    boundary="reflecting",
+    convention="row",
+    sparse=False,
+    validate=True,
+):
+    r"""Build a detailed-balance-preserving 1D Smoluchowski generator.
+
+    The row-convention generator has entries ``K[i, j] = rate i -> j`` and
+    rows summing to zero.  Rates use the symmetric discretization
+
+    .. math::
+
+        k_{i \to i+1}
+        =
+        \frac{D_{i+1/2}}{\Delta s^2}
+        \exp[-\tfrac{\beta}{2}(F_{i+1}-F_i)].
+
+    Parameters
+    ----------
+    s : array_like, shape (n,)
+        Uniform, strictly increasing CV grid.
+    F : array_like, shape (n,)
+        Free-energy profile on ``s``.
+    D : float or array_like
+        Diffusion coefficient.  Scalars are constant; length ``n`` arrays are
+        cell-centered; length ``n-1`` arrays are face-centered.
+    beta : float
+        Inverse energy, compatible with ``F``.
+    boundary : {"reflecting", "reflect"}
+        Reflecting/no-flux boundaries.  Other boundaries are not implemented
+        in this first version.
+    convention : {"row", "column"}
+        Return row-sum-zero generator by default; ``"column"`` returns the
+        transpose.
+    sparse : bool
+        Return SciPy CSR when True.
+    validate : bool
+        Check finite inputs and positive diffusion.
+    """
+
+    s = np.asarray(s, dtype=float).ravel()
+    F = np.asarray(F, dtype=float).ravel()
+    if s.size != F.size:
+        raise ValueError("s and F must have the same length")
+    if s.size < 3:
+        raise ValueError("Need at least 3 grid points")
+    ds = _require_uniform_grid_1d(s)
+
+    if str(boundary).lower() not in {"reflecting", "reflect", "noflux", "no-flux"}:
+        raise ValueError("build_smolu_generator_1d currently supports reflecting boundaries only")
+    conv = str(convention).lower()
+    if conv not in {"row", "column"}:
+        raise ValueError("convention must be 'row' or 'column'")
+    if not np.isfinite(float(beta)):
+        raise ValueError("beta must be finite")
+    if validate:
+        if not np.all(np.isfinite(F)):
+            raise ValueError("F contains non-finite values")
+
+    D_face = _as_1d_face_array(D, s.size, "D")
+    K = np.zeros((s.size, s.size), dtype=float)
+    inv_ds2 = 1.0 / (float(ds) * float(ds))
+    beta_val = float(beta)
+
+    for i in range(s.size - 1):
+        dF = float(F[i + 1] - F[i])
+        rate_forward = float(D_face[i]) * inv_ds2 * np.exp(-0.5 * beta_val * dF)
+        rate_backward = float(D_face[i]) * inv_ds2 * np.exp(+0.5 * beta_val * dF)
+        K[i, i + 1] = rate_forward
+        K[i + 1, i] = rate_backward
+
+    for i in range(s.size):
+        K[i, i] = -float(np.sum(K[i, :]))
+
+    if conv == "column":
+        K = K.T
+
+    if sparse:
+        if not _HAVE_SCIPY_SPARSE:
+            raise ImportError(
+                "build_smolu_generator_1d(sparse=True) requires scipy.sparse. "
+                "Install SciPy or call with sparse=False."
+            )
+        return sp.csr_matrix(K)
+    return K
+
+
+def _solve_generator_dirichlet(K: np.ndarray, fixed_mask: np.ndarray, fixed_values: np.ndarray, rhs=None):
+    """Solve ``K u = rhs`` on free states with fixed Dirichlet values."""
+
+    K = np.asarray(K, dtype=float)
+    fixed_mask = np.asarray(fixed_mask, dtype=bool).ravel()
+    fixed_values = np.asarray(fixed_values, dtype=float).ravel()
+    n = K.shape[0]
+    if fixed_mask.size != n or fixed_values.size != n:
+        raise ValueError("Dirichlet masks/values must match K shape")
+
+    free_mask = ~fixed_mask
+    free_idx = np.flatnonzero(free_mask)
+    fixed_idx = np.flatnonzero(fixed_mask)
+    u = fixed_values.copy()
+    if free_idx.size == 0:
+        return u
+
+    A = K[np.ix_(free_idx, free_idx)]
+    if rhs is None:
+        b = np.zeros(free_idx.size, dtype=float)
+    else:
+        rhs_arr = np.asarray(rhs, dtype=float).ravel()
+        if rhs_arr.size != n:
+            raise ValueError("rhs must match K shape")
+        b = rhs_arr[free_idx].copy()
+    if fixed_idx.size > 0:
+        b = b - K[np.ix_(free_idx, fixed_idx)] @ fixed_values[fixed_idx]
+    try:
+        u[free_idx] = np.linalg.solve(A, b)
+    except np.linalg.LinAlgError:
+        u[free_idx] = np.linalg.lstsq(A, b, rcond=None)[0]
+    return u
+
+
+def compute_ctmc_generator_from_grid_generator_1d(
+    s,
+    F,
+    K_grid,
+    basin_network,
+    *,
+    beta=None,
+    init_weight="boltzmann",
+    convention="row",
+    verbose=True,
+):
+    """Coarse-grain a 1D grid-state generator into basin CTMC rates.
+
+    This is the finite-state analogue of :func:`compute_ctmc_generator_fpe_1d`.
+    It accepts any row-sum-zero grid generator on the same grid as ``s`` and
+    the basin labels, including a memory-corrected effective generator.
+
+    Parameters
+    ----------
+    s, F : array_like, shape (n,)
+        CV grid and free-energy profile used for basin averaging.
+    K_grid : array_like, shape (n, n)
+        Grid-state generator.  Row convention is used by default.
+    basin_network : BasinNetwork1D
+        Basin labels on the same grid.
+    beta : float, optional
+        Required for ``init_weight='boltzmann'``.
+    init_weight : {'boltzmann', 'uniform'}
+        Weight for basin averages of exit times and committors.
+    convention : {'row', 'column'}
+        Matrix orientation of ``K_grid``.
+
+    Returns
+    -------
+    dict
+        Keys include ``K``, ``exit_mean``, ``k_out``, ``p_branch``,
+        ``basin_ids``, ``labels_full``, ``method`` and ``diagnostics``.
+    """
+
+    s = np.asarray(s, dtype=float).ravel()
+    F = np.asarray(F, dtype=float).ravel()
+    if s.size != F.size:
+        raise ValueError("s and F must have the same length")
+    n_grid = int(s.size)
+
+    K_arr = K_grid.toarray() if hasattr(K_grid, "toarray") else K_grid
+    K_arr = np.asarray(K_arr, dtype=float)
+    if K_arr.shape != (n_grid, n_grid):
+        raise ValueError(f"K_grid has shape {K_arr.shape}, expected {(n_grid, n_grid)}")
+    if not np.all(np.isfinite(K_arr)):
+        raise ValueError("K_grid contains non-finite values")
+
+    conv = str(convention).lower()
+    if conv not in {"row", "column"}:
+        raise ValueError("convention must be 'row' or 'column'")
+    K_row = K_arr if conv == "row" else K_arr.T
+
+    labels_src = getattr(basin_network, "core_labels", None)
+    if labels_src is None:
+        labels_src = basin_network.labels
+    labels = np.asarray(labels_src, dtype=int).ravel()
+    labels_full = np.asarray(basin_network.labels, dtype=int).ravel()
+    if labels.size != n_grid or labels_full.size != n_grid:
+        raise ValueError("basin_network labels must have the same length as s")
+
+    basin_ids = np.unique(labels[labels >= 0])
+    basin_ids = np.sort(basin_ids)
+    n_basins = int(basin_ids.size)
+    if n_basins < 1:
+        raise ValueError("No basins found (labels>=0) — cannot build CTMC")
+
+    if str(init_weight).lower() == "uniform":
+        weight = np.ones_like(F, dtype=float)
+    elif str(init_weight).lower() == "boltzmann":
+        if beta is None:
+            raise ValueError("beta is required when init_weight='boltzmann'")
+        F0 = float(np.nanmin(F[np.isfinite(F)]))
+        weight = _safe_exp(-float(beta) * (F - F0))
+    else:
+        raise ValueError("init_weight must be 'boltzmann' or 'uniform'")
+
+    in_any_basin = labels >= 0
+    basin_masks = [(labels == bid) for bid in basin_ids]
+    exit_mean = np.full(n_basins, np.nan, dtype=float)
+    k_out = np.full(n_basins, np.nan, dtype=float)
+    p_branch = np.full((n_basins, n_basins), np.nan, dtype=float)
+    K_basin = np.zeros((n_basins, n_basins), dtype=float)
+
+    if verbose:
+        print(f"[grid CTMC] n_basins={n_basins}, init_weight={init_weight}")
+
+    for i in range(n_basins):
+        mask_i = basin_masks[i]
+        if not np.any(mask_i):
+            continue
+        absorb = in_any_basin & (~mask_i)
+        if not np.any(absorb):
+            continue
+        fixed_values = np.zeros(n_grid, dtype=float)
+        tau = _solve_generator_dirichlet(
+            K_row,
+            fixed_mask=absorb,
+            fixed_values=fixed_values,
+            rhs=-np.ones(n_grid, dtype=float),
+        )
+        tau_mean = _weighted_average_1d(tau, weight, mask_i)
+        exit_mean[i] = float(tau_mean) if np.isfinite(tau_mean) else np.nan
+        if np.isfinite(exit_mean[i]) and abs(exit_mean[i]) > 0.0:
+            k_out[i] = 1.0 / float(exit_mean[i])
+        if verbose:
+            print(f"[grid CTMC] basin {basin_ids[i]}: <tau_exit>={exit_mean[i]:.6g}, k_out={k_out[i]:.6g}")
+
+    if n_basins == 2:
+        for i in range(n_basins):
+            if np.isfinite(k_out[i]):
+                j = 1 - i
+                p_branch[i, j] = 1.0
+                K_basin[i, j] = float(k_out[i])
+                K_basin[i, i] = -float(k_out[i])
+    else:
+        for i in range(n_basins):
+            if not np.isfinite(k_out[i]):
+                continue
+            mask_i = basin_masks[i]
+            for j in range(n_basins):
+                if i == j:
+                    continue
+                mask_j = basin_masks[j]
+                if not np.any(mask_j):
+                    continue
+                fixed_mask = in_any_basin & (~mask_i)
+                fixed_values = np.zeros(n_grid, dtype=float)
+                fixed_values[mask_j] = 1.0
+                q = _solve_generator_dirichlet(
+                    K_row,
+                    fixed_mask=fixed_mask,
+                    fixed_values=fixed_values,
+                    rhs=np.zeros(n_grid, dtype=float),
+                )
+                p_branch[i, j] = _weighted_average_1d(q, weight, mask_i)
+
+            row = p_branch[i, :].copy()
+            row[i] = np.nan
+            srow = np.nansum(row)
+            if np.isfinite(srow) and srow != 0.0:
+                for j in range(n_basins):
+                    if i != j and np.isfinite(p_branch[i, j]):
+                        p_branch[i, j] /= float(srow)
+                        K_basin[i, j] = float(k_out[i] * p_branch[i, j])
+            K_basin[i, i] = -float(np.sum(K_basin[i, :]))
+
+    row_sums = K_row.sum(axis=1)
+    offdiag = K_row.copy()
+    np.fill_diagonal(offdiag, 0.0)
+    basin_offdiag = K_basin.copy()
+    np.fill_diagonal(basin_offdiag, 0.0)
+    diagnostics = {
+        "grid_max_abs_row_sum": float(np.max(np.abs(row_sums))) if row_sums.size else 0.0,
+        "grid_min_offdiagonal": float(np.min(offdiag)) if offdiag.size else 0.0,
+        "grid_negative_offdiagonal_count": int(np.sum(offdiag < -1e-12)),
+        "basin_min_offdiagonal": float(np.min(basin_offdiag)) if basin_offdiag.size else 0.0,
+        "basin_negative_offdiagonal_count": int(np.sum(basin_offdiag < -1e-12)),
+        "branch_min": float(np.nanmin(p_branch)) if np.any(np.isfinite(p_branch)) else np.nan,
+        "branch_max": float(np.nanmax(p_branch)) if np.any(np.isfinite(p_branch)) else np.nan,
+    }
+    if diagnostics["grid_negative_offdiagonal_count"] > 0 or diagnostics["basin_negative_offdiagonal_count"] > 0:
+        warnings.warn(
+            "Coarse-grained generator has negative off-diagonal entries; "
+            "inspect diagnostics before interpreting rates.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+    return {
+        "K": K_basin,
+        "exit_mean": exit_mean,
+        "k_out": k_out,
+        "p_branch": p_branch,
+        "basin_ids": basin_ids,
+        "labels_full": labels_full,
+        "method": "grid_generator_1d",
+        "diagnostics": diagnostics,
+    }
 
 
 def _build_tridiag_div_A_grad_1d(A_cell: np.ndarray, ds: float):

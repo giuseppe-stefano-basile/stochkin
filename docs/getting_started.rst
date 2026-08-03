@@ -48,6 +48,10 @@ worked examples:
   ``notebooks/05_pairwise_mfep_paths.ipynb``
 - ``examples/06_uncertainty.py`` plus
   ``notebooks/06_uncertainty.ipynb``
+- ``examples/08_user_memory_gme_1d.py`` demonstrates GME propagation
+  with a user-supplied memory kernel
+- ``examples/09_memory_corrected_ctmc_rates.py`` demonstrates memory-corrected
+  basin CTMC rates from a user-supplied grid-level kernel
 
 The notebooks are generated from the template builder:
 
@@ -114,6 +118,65 @@ The continuous-time Markov chain (CTMC) generator :math:`K` is an
 is the rate of transition from basin *i* to basin *j*, and the diagonal
 satisfies :math:`K_{ii} = -\sum_{j \neq i} K_{ij}` so that rows sum
 to zero.
+
+Memory-corrected CTMC rates
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. warning::
+
+   Memory-kernel kinetics is an experimental development feature.  Import it
+   from ``stochkin.experimental.memory`` and expect API and numerical-method
+   changes between minor releases.
+
+The memory workflow extends the standard 1-D CTMC construction instead of
+replacing it.  First ``F(s)`` and ``D(s)`` define the Markovian
+Smoluchowski grid generator ``K0``.  Then a user-supplied many-body-inspired
+kernel :math:`\Sigma(t)` corrects that grid generator through memory moments.
+Finally, the corrected grid generator is coarse-grained into basin-to-basin
+CTMC rates with the same backward-equation logic used by the Markovian
+workflow.
+
+``stochkin`` does not estimate :math:`\Sigma(t)` from trajectories.  Supply
+``Sigma_t`` on the exact final CV grid with shape
+``(n_times, n_grid, n_grid)`` and units ``time^-2``.  The ``memory_times``
+array must use the same time unit as ``D`` and the returned rates.  No
+matrix-valued interpolation is performed by the PLUMED wrapper; if you crop
+or resample the FES, provide a kernel for that final grid.
+
+By default, stochkin uses row-vector convention: ``p(t) = p(0) T(t)``.
+Therefore ``K0``, the effective generator, and each ``Sigma_t[k]`` should
+have rows summing to zero.  Use ``convention="column"`` only when all
+matrices are supplied in column-vector orientation.
+
+.. code-block:: python
+
+   import numpy as np
+   from stochkin.experimental import memory as memory_kinetics
+
+   s = np.linspace(-1.5, 1.5, 41)
+   F = 0.35 * (s**2 - 1.0) ** 2
+   F -= F.min()
+
+   D = 0.002
+   K0 = memory_kinetics.build_smolu_generator_1d(s, F, D=D, beta=1.0)
+   memory_times = np.linspace(0.0, 2.0, 201)
+   Sigma_t = np.asarray([0.12 * np.exp(-t / 0.35) * K0 for t in memory_times])
+
+   result = memory_kinetics.run_memory_corrected_ctmc_1d(
+       s, F, D,
+       Sigma_t=Sigma_t,
+       memory_times=memory_times,
+       memory_order=1,
+       beta=1.0,
+   )
+
+   print(result["K"])
+   print(result["memory_diagnostics"])
+
+The lower-level
+:func:`stochkin.experimental.memory.run_gme_1d` workflow remains useful for
+propagating probability vectors or transition matrices when you want to
+validate or visualize non-Markovian dynamics directly.
 
 
 Uncertainty propagation

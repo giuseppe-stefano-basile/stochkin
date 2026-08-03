@@ -46,8 +46,19 @@ from itertools import combinations
 
 from .fes import load_plumed_fes_2d, make_fes_potential_from_grid
 from .potentials import build_basin_network_from_fes_1d, build_basin_network_from_potential
-from .fpe import compute_ctmc_generator_fpe_1d
+from .fpe import (
+    compute_ctmc_generator_fpe_1d,
+    build_smolu_generator_1d,
+    compute_ctmc_generator_from_grid_generator_1d,
+)
 from .mfep import compute_mfep_profile_1d
+from .memory import (
+    memory_moments,
+    effective_markov_generator_from_memory,
+    propagate_gme,
+    propagate_gme_transition_matrix,
+    validate_memory_kernel,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -385,6 +396,350 @@ def run_1d_ctmc(
     info["basin_ids"] = np.array([b.id for b in bn.basins], dtype=int)
 
     return _pack_result(s, F, D, kT_val, tps, K, info)
+
+
+def run_gme_1d(
+    s: Union[np.ndarray, Sequence],
+    F: Union[np.ndarray, Sequence],
+    D: Union[float, np.ndarray],
+    *,
+    Sigma_t=None,
+    memory_times=None,
+    T: float = 300.0,
+    beta: Optional[float] = None,
+    p0: Optional[Union[np.ndarray, Sequence]] = None,
+    n_steps: Optional[int] = None,
+    dt: Optional[float] = None,
+    time_unit: str = "ps",
+    boundary: str = "reflecting",
+    convention: str = "row",
+    enforce_conservation: bool = False,
+    effective_order: Optional[int] = 0,
+    sparse: bool = False,
+) -> dict:
+    """Run a 1D generalized master equation with a user-supplied memory kernel.
+
+    .. warning::
+       This workflow belongs to the experimental memory API.  Prefer
+       :func:`stochkin.experimental.memory.run_gme_1d` and expect changes
+       between minor releases.
+
+    ``stochkin`` does not estimate memory kernels in this workflow.  Users must
+    provide ``Sigma_t`` with shape ``(n_times, n_states, n_states)`` and units
+    ``time^-2``, together with ``memory_times`` in the same time unit used for
+    ``D`` and the resulting ``K0``.
+
+    Parameters
+    ----------
+    s, F, D : array_like
+        1D CV grid, free energy, and diffusion profile used to build ``K0``.
+        ``D`` is in CV^2 per ``time_unit``.
+    Sigma_t, memory_times : array_like
+        Required user-supplied memory kernel and its time grid.
+    T : float
+        Temperature in Kelvin, used when ``beta`` is not supplied.
+    beta : float, optional
+        Inverse energy compatible with ``F``.  Overrides ``T`` when given.
+    p0 : array_like, optional
+        Initial probability vector.  If omitted, the transition matrix is
+        propagated from the identity.
+    n_steps, dt : optional
+        Propagation length and step.  For v1, ``dt`` must match the uniform
+        spacing of ``memory_times``.
+    time_unit : str
+        Label for diagnostics; it does not rescale inputs.
+    convention : {"row", "column"}
+        Matrix orientation convention.
+    enforce_conservation : bool
+        If True, diagonal entries of the supplied kernel are adjusted so rows
+        or columns sum to zero before propagation.
+    effective_order : int or None
+        Include a short-memory effective generator when not None.
+    sparse : bool
+        Request sparse ``K0`` construction; it is converted back to dense for
+        propagation.
+    """
+
+    s_arr = np.asarray(s, dtype=float).ravel()
+    F_arr = np.asarray(F, dtype=float).ravel()
+    if s_arr.size != F_arr.size:
+        raise ValueError("s and F must have the same length")
+
+    beta_val = float(beta) if beta is not None else 1.0 / _kT(T)
+    kT_val = np.nan if beta is not None else _kT(T)
+    _ = _time_unit_to_ps(time_unit)
+
+    K0 = build_smolu_generator_1d(
+        s_arr,
+        F_arr,
+        D,
+        beta=beta_val,
+        boundary=boundary,
+        convention=convention,
+        sparse=sparse,
+    )
+    if hasattr(K0, "toarray"):
+        K0 = K0.toarray()
+    K0 = np.asarray(K0, dtype=float)
+
+    validation = validate_memory_kernel(
+        Sigma_t,
+        memory_times,
+        K0=K0,
+        convention=convention,
+        enforce_conservation=enforce_conservation,
+    )
+
+    if p0 is None:
+        propagation = propagate_gme_transition_matrix(
+            K0,
+            validation.Sigma,
+            validation.times,
+            n_steps=n_steps,
+            dt=dt,
+            convention=convention,
+        )
+        propagation_kind = "transition_matrix"
+    else:
+        propagation = propagate_gme(
+            p0,
+            K0,
+            validation.Sigma,
+            validation.times,
+            n_steps=n_steps,
+            dt=dt,
+            convention=convention,
+        )
+        propagation_kind = "probability"
+
+    moments = memory_moments(validation.Sigma, validation.times, max_order=2)
+    effective_generator = None
+    if effective_order is not None:
+        effective_generator = effective_markov_generator_from_memory(
+            K0,
+            validation.Sigma,
+            validation.times,
+            order=int(effective_order),
+            convention=convention,
+        )
+
+    return {
+        "experimental": True,
+        "experimental_api": "memory-kernel-kinetics/0.1",
+        "s": s_arr,
+        "F": F_arr,
+        "D_used": D,
+        "kT": kT_val,
+        "beta": beta_val,
+        "time_unit": time_unit,
+        "K0": K0,
+        "memory_validation": validation,
+        "memory_moments": moments,
+        "effective_generator": effective_generator,
+        "propagation": propagation,
+        "propagation_kind": propagation_kind,
+        "convention": str(convention).lower(),
+    }
+
+
+def run_memory_corrected_ctmc_1d(
+    s: Union[np.ndarray, Sequence],
+    F: Union[np.ndarray, Sequence],
+    D: Union[float, np.ndarray],
+    *,
+    Sigma_t=None,
+    memory_times=None,
+    memory_order: int = 0,
+    T: float = 300.0,
+    beta: Optional[float] = None,
+    time_unit: str = "ps",
+    max_basins: Optional[int] = None,
+    core_fraction: Optional[float] = 0.05,
+    init_weight: str = "boltzmann",
+    boundary: str = "reflecting",
+    convention: str = "row",
+    enforce_memory_conservation: bool = False,
+    enforce_effective_conservation: bool = False,
+    effective_max_iter: int = 200,
+    effective_tol: float = 1e-10,
+    effective_damping: float = 0.5,
+    verbose: bool = True,
+) -> dict:
+    """Compute basin CTMC rates from a memory-corrected grid generator.
+
+    .. warning::
+       This workflow belongs to the experimental memory API.  Prefer
+       :func:`stochkin.experimental.memory.run_memory_corrected_ctmc_1d` and
+       expect changes between minor releases.
+
+    This workflow extends :func:`run_1d_ctmc`: ``F(s), D(s)`` define the
+    Markovian grid generator ``K0_grid`` and the user-supplied memory kernel
+    ``Sigma_t`` supplies many-body-inspired corrections.  The resulting
+    effective grid generator is coarse-grained into basin rates using finite
+    state backward equations.  ``Sigma_t`` must already have shape
+    ``(n_times, n_grid, n_grid)`` on this exact grid and units ``time^-2``;
+    this workflow does not estimate or interpolate memory kernels.
+    """
+
+    s_arr = np.asarray(s, dtype=float).ravel()
+    F_arr = np.asarray(F, dtype=float).ravel()
+    if s_arr.size != F_arr.size:
+        raise ValueError("s and F must have the same length")
+
+    kT_val = np.nan if beta is not None else _kT(T)
+    beta_val = float(beta) if beta is not None else 1.0 / kT_val
+    tps = _time_unit_to_ps(time_unit)
+
+    K0_grid = build_smolu_generator_1d(
+        s_arr,
+        F_arr,
+        D,
+        beta=beta_val,
+        boundary=boundary,
+        convention=convention,
+        sparse=False,
+    )
+    validation = validate_memory_kernel(
+        Sigma_t,
+        memory_times,
+        K0=K0_grid,
+        convention=convention,
+        enforce_conservation=enforce_memory_conservation,
+    )
+    effective = effective_markov_generator_from_memory(
+        K0_grid,
+        validation.Sigma,
+        validation.times,
+        order=int(memory_order),
+        convention=convention,
+        max_iter=int(effective_max_iter),
+        tol=float(effective_tol),
+        damping=float(effective_damping),
+        enforce_conservation=bool(enforce_effective_conservation),
+        warn=True,
+        return_result=True,
+    )
+
+    bn = build_basin_network_from_fes_1d(
+        s_arr, F_arr, max_basins=max_basins, verbose=verbose
+    )
+    _build_core_labels(s_arr, F_arr, bn, core_fraction)
+
+    info = compute_ctmc_generator_from_grid_generator_1d(
+        s_arr,
+        F_arr,
+        effective.K_eff,
+        bn,
+        beta=beta_val,
+        init_weight=init_weight,
+        convention=convention,
+        verbose=verbose,
+    )
+    result = _pack_result(
+        s_arr,
+        F_arr,
+        D,
+        kT_val,
+        tps,
+        np.asarray(info["K"], dtype=float),
+        info,
+    )
+    result.update(
+        {
+            "experimental": True,
+            "experimental_api": "memory-kernel-kinetics/0.1",
+            "basin_network": bn,
+            "K0_grid": K0_grid,
+            "K_eff_grid": effective.K_eff,
+            "memory_order": int(memory_order),
+            "memory_times": validation.times,
+            "memory_validation": validation,
+            "memory_moments": effective.moments,
+            "memory_effective": effective,
+            "memory_diagnostics": effective.diagnostics,
+            "grid_ctmc_info": info,
+            "convention": str(convention).lower(),
+            "method": "memory_corrected_ctmc_1d",
+        }
+    )
+    return result
+
+
+def run_memory_corrected_ctmc_from_plumed(
+    fes_path: Union[str, Path],
+    D: Union[float, np.ndarray],
+    *,
+    Sigma_t=None,
+    memory_times=None,
+    memory_order: int = 0,
+    T: float = 300.0,
+    beta: Optional[float] = None,
+    time_unit: str = "ps",
+    crop: Optional[Tuple[float, float]] = None,
+    resample_n: Optional[int] = None,
+    s_col: int = 0,
+    F_col: int = 1,
+    max_basins: Optional[int] = None,
+    core_fraction: Optional[float] = 0.05,
+    init_weight: str = "boltzmann",
+    boundary: str = "reflecting",
+    convention: str = "row",
+    enforce_memory_conservation: bool = False,
+    enforce_effective_conservation: bool = False,
+    effective_max_iter: int = 200,
+    effective_tol: float = 1e-10,
+    effective_damping: float = 0.5,
+    verbose: bool = True,
+) -> dict:
+    """Load a 1D PLUMED FES and compute memory-corrected basin CTMC rates.
+
+    .. warning::
+       This workflow belongs to the experimental memory API.  Prefer
+       :func:`stochkin.experimental.memory.run_memory_corrected_ctmc_from_plumed`
+       and expect changes between minor releases.
+
+    The supplied ``Sigma_t`` and any array-valued ``D`` must already match the
+    final grid after optional cropping/resampling.  No matrix-valued
+    memory-kernel interpolation is performed.
+    """
+
+    from .fes import load_plumed_fes_1d
+
+    s, F = load_plumed_fes_1d(
+        fes_path, x_col=s_col, fes_col=F_col, verbose=verbose
+    )
+    if crop is not None:
+        lo, hi = float(crop[0]), float(crop[1])
+        mask = (s >= lo) & (s <= hi)
+        s, F = s[mask], F[mask]
+
+    if resample_n is not None:
+        su = np.linspace(float(s[0]), float(s[-1]), int(resample_n))
+        F = np.interp(su, s, F)
+        s = su
+
+    return run_memory_corrected_ctmc_1d(
+        s,
+        F,
+        D,
+        Sigma_t=Sigma_t,
+        memory_times=memory_times,
+        memory_order=memory_order,
+        T=T,
+        beta=beta,
+        time_unit=time_unit,
+        max_basins=max_basins,
+        core_fraction=core_fraction,
+        init_weight=init_weight,
+        boundary=boundary,
+        convention=convention,
+        enforce_memory_conservation=enforce_memory_conservation,
+        enforce_effective_conservation=enforce_effective_conservation,
+        effective_max_iter=effective_max_iter,
+        effective_tol=effective_tol,
+        effective_damping=effective_damping,
+        verbose=verbose,
+    )
 
 
 def run_1d_ctmc_from_plumed(
@@ -846,6 +1201,9 @@ __all__ = [
     "run_1d_ctmc",
     "run_1d_ctmc_from_plumed",
     "run_1d_ctmc_with_hummer_D",
+    "run_memory_corrected_ctmc_1d",
+    "run_memory_corrected_ctmc_from_plumed",
+    "run_gme_1d",
     "run_mfep_ctmc",
     "run_multi_mfep_ctmc",
     # D-profile helpers exposed for advanced users

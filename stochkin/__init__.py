@@ -95,6 +95,8 @@ from .fpe import (
     solve_fp_steady_state,
     # New: discrete FP generator on the 2D FES grid
     build_fp_generator_from_fes,
+    build_smolu_generator_1d,
+    compute_ctmc_generator_from_grid_generator_1d,
     compute_ctmc_generator_fpe_fipy,
     # 1D backward CTMC (NumPy; no FiPy)
     compute_ctmc_generator_fpe_1d,
@@ -163,6 +165,28 @@ from .mfpt import (
 from .fast_langevin import fast_langevin1d_backend_available
 
 # --------------------------------------------------------------------
+# Experimental user-supplied memory-kernel tools
+#
+# These top-level aliases are retained during development for compatibility.
+# New code should import from ``stochkin.experimental.memory``.
+# --------------------------------------------------------------------
+from .memory import (
+    MemoryKernelInput,
+    GMEPropagationResult,
+    MemoryValidationResult,
+    EffectiveGeneratorResult,
+    validate_memory_kernel,
+    enforce_generator_conservation,
+    propagate_gme,
+    propagate_gme_transition_matrix,
+    memory_moments,
+    effective_markov_generator_from_memory,
+    memory_corrected_generator,
+    chapman_kolmogorov_error,
+    validate_memory_model,
+)
+
+# --------------------------------------------------------------------
 # Plotting helpers
 # --------------------------------------------------------------------
 from .plotting import (
@@ -209,6 +233,8 @@ __all__ = [
     # FPE
     "solve_fp_steady_state",
     "build_fp_generator_from_fes",
+    "build_smolu_generator_1d",
+    "compute_ctmc_generator_from_grid_generator_1d",
     "compute_ctmc_generator_fpe_fipy",
     # Integrators
     "velocity_update",
@@ -244,6 +270,20 @@ __all__ = [
     "estimate_rate_matrix",
     "compute_mfpt_network_fpe",
     "fast_langevin1d_backend_available",
+    # Experimental memory-kernel compatibility aliases
+    "MemoryKernelInput",
+    "GMEPropagationResult",
+    "MemoryValidationResult",
+    "EffectiveGeneratorResult",
+    "validate_memory_kernel",
+    "enforce_generator_conservation",
+    "propagate_gme",
+    "propagate_gme_transition_matrix",
+    "memory_moments",
+    "effective_markov_generator_from_memory",
+    "memory_corrected_generator",
+    "chapman_kolmogorov_error",
+    "validate_memory_model",
     # Plotting
     "plot_results",
     "plot_mfpt_matrix",
@@ -259,6 +299,9 @@ from .workflows import (
     run_1d_ctmc,
     run_1d_ctmc_from_plumed,
     run_1d_ctmc_with_hummer_D,
+    run_memory_corrected_ctmc_1d,
+    run_memory_corrected_ctmc_from_plumed,
+    run_gme_1d,
     run_mfep_ctmc,
     run_multi_mfep_ctmc,
     interface_to_centers,
@@ -270,6 +313,9 @@ __all__ += [
     "run_1d_ctmc",
     "run_1d_ctmc_from_plumed",
     "run_1d_ctmc_with_hummer_D",
+    "run_memory_corrected_ctmc_1d",
+    "run_memory_corrected_ctmc_from_plumed",
+    "run_gme_1d",
     "run_mfep_ctmc",
     "run_multi_mfep_ctmc",
     "interface_to_centers",

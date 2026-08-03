@@ -23,6 +23,7 @@ continuous-time Markov chain (CTMC) kinetics via a Fokker–Planck
 | **CTMC generator** | Rate matrix **K**, branching probabilities, mean first-passage times |
 | **MFEP** | Grid-Dijkstra + NEB path refinement → 1D profile along arc-length |
 | **Langevin dynamics** | BAOAB (underdamped) and overdamped BD replicas with multiprocessing |
+| **Memory-corrected CTMC** | User-supplied memory kernels correct the grid generator before basin coarse-graining |
 
 ---
 
@@ -114,6 +115,60 @@ mfpt = compute_bidirectional_mfpt(
 )
 ```
 
+### 5 - Experimental memory-kernel kinetics
+
+> **Development feature:** this API is experimental. Names, defaults,
+> numerical methods, and result schemas may change between minor releases.
+> Use the explicit `stochkin.experimental.memory` namespace for new code.
+
+`stochkin` can use a user-supplied memory kernel as a many-body-inspired
+correction to the standard CTMC workflow. The baseline `F(s), D(s)` model
+builds a Markovian grid generator `K0`; the supplied `Sigma(t)` is
+integrated into a moment-resummed effective grid generator; that corrected
+operator is then coarse-grained into the usual basin CTMC rate matrix.
+
+The kernel must already live on the final CV grid:
+`Sigma_t.shape == (n_times, n_grid, n_grid)`, with units `time^-2`.
+`memory_times`, `D`, and the returned rates must use one consistent time
+unit. `stochkin` does **not** estimate `Sigma(t)` from trajectories in v1.
+
+```python
+import numpy as np
+from stochkin.experimental import memory as memory_kinetics
+
+s = np.linspace(-1.5, 1.5, 41)
+F = 0.35 * (s**2 - 1.0) ** 2
+F -= F.min()
+
+D = 0.002
+K0 = memory_kinetics.build_smolu_generator_1d(s, F, D=D, beta=1.0)
+memory_times = np.linspace(0.0, 2.0, 201)
+
+# Required shape: (n_times, n_grid, n_grid).
+# K0 is time^-1, so this amplitude has units time^-1.
+Sigma_t = np.asarray([0.12 * np.exp(-t / 0.35) * K0 for t in memory_times])
+
+result = memory_kinetics.run_memory_corrected_ctmc_1d(
+    s, F, D,
+    Sigma_t=Sigma_t,
+    memory_times=memory_times,
+    memory_order=1,
+    beta=1.0,
+)
+
+print(result["K"])                 # basin CTMC rates
+print(result["memory_diagnostics"])
+```
+
+By default, matrices use row-vector convention: `p(t) = p(0) T(t)`.
+Rows of `K0`, `K_eff`, and each `Sigma_t[k]` should sum to zero. Use
+`convention="column"` only when all supplied matrices are oriented for
+column-vector dynamics.
+
+`run_gme_1d` is still available for lower-level GME propagation and
+transition-matrix validation when you want to inspect non-Markovian dynamics
+directly rather than extract basin rate constants.
+
 ## Example notebooks
 
 Notebook versions of the bundled examples live in `notebooks/`:
@@ -125,6 +180,11 @@ Notebook versions of the bundled examples live in `notebooks/`:
 - `04_mfep_ctmc.ipynb`
 - `05_pairwise_mfep_paths.ipynb`
 - `06_uncertainty.ipynb`
+
+Additional script-only examples cover user-supplied memory kernels:
+`examples/08_user_memory_gme_1d.py` for GME propagation and
+`examples/09_memory_corrected_ctmc_rates.py` for memory-corrected basin
+rate constants.
 
 They can be regenerated from the template builder with:
 
@@ -141,7 +201,8 @@ python tools/build_example_notebooks.py
 | `workflows` | `run_1d_ctmc`, `run_1d_ctmc_from_plumed`, `run_1d_ctmc_with_hummer_D`, `run_mfep_ctmc`, `interface_to_centers`, `interpolate_D_to_grid` |
 | `fes` | `load_plumed_fes_1d`, `load_plumed_fes_2d`, `FESPotential`, `FESPotential1D` |
 | `potentials` | `muller_potential`, `double_well_2d`, `build_basin_network_from_fes_1d`, `BasinNetwork1D` |
-| `fpe` | `compute_ctmc_generator_fpe_1d`, `compute_ctmc_generator_fpe_fipy`, `build_fp_generator_from_fes` |
+| `fpe` | `compute_ctmc_generator_fpe_1d`, `compute_ctmc_generator_from_grid_generator_1d`, `compute_ctmc_generator_fpe_fipy`, `build_fp_generator_from_fes`, `build_smolu_generator_1d` |
+| `experimental.memory` | `run_memory_corrected_ctmc_1d`, `run_gme_1d`, `validate_memory_kernel`, `effective_markov_generator_from_memory`, `propagate_gme` |
 | `mfep` | `compute_mfep_profile_1d`, `GridMFEP`, `NEBMFEP`, `MFEPPath` |
 | `mfpt` | `compute_mfpt_network`, `compute_bidirectional_mfpt`, `compute_mfpt_network_fpe` |
 | `integrators` | `baobab_2d`, `overdamped_bd` |
@@ -170,6 +231,10 @@ All `run_*` workflow functions return a `dict` with:
 | `p_branch` | – | Branching probability matrix |
 | `labels_full` | – | Basin label per grid point (-1 = transition) |
 | `basin_ids` | – | Sorted basin ids |
+
+Memory-corrected CTMC workflows return the same basin-rate schema and add
+`K0_grid`, `K_eff_grid`, `memory_order`, `memory_moments`, and
+`memory_diagnostics`.
 
 ---
 
